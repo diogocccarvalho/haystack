@@ -44,7 +44,7 @@ INDEX_CONV = _cfg["vault"].get("index_convention", "list")
 SKIP_PARTS = tuple(_cfg["vault"].get("exclude_dirs", []))
 SKIP_FILES = set(_cfg["vault"].get("exclude_files", []))
 EXTERNAL = {Path(s).expanduser(): "external/" + Path(s).name
-            for s in _cfg.get("external", [])}
+            for s in _cfg["vault"].get("external", [])}
 DB = Path(_cfg["index"]["db"]).expanduser()
 EMBD_URL = _cfg["embeddings"]["url"]
 EMBD_MODEL = _cfg["embeddings"].get("model", "")
@@ -233,13 +233,29 @@ def load_all(con):
 
 
 def rank(con, text, k=5):
+    """RRF fusion (Cormack 2009; k=60 is the ES/Qdrant default) of the dense
+    ranking and the lexical ranking, plus additive learned-correction boost.
+    Rank-based fusion avoids the cosine-vs-BM25 scale-calibration problem."""
     paths, heads, mat, texts = load_all(con)
     q = embed([text])[0]
-    scores = mat @ q
-    scores += learn_lookup(con, text, paths, q)
-    scores += lexical_boost(text, texts)
-    scores = np.array([s * 1.15 if h in ("(title)", "(top)") else s
-                       for s, h in zip(scores, heads)])
+    n = len(paths)
+    dense = mat @ q
+    lex = lexical_boost(text, texts)
+    # field boost: title/top chunks dominate in both streams (WANDS: biggest gain)
+    title_mask = np.array([1.15 if h in ("(title)", "(top)") else 1.0 for h in heads])
+    dense_rank = np.empty(n, dtype=int)
+    dense_rank[np.argsort(-(dense * title_mask))] = np.arange(n)
+    lex_rank = np.empty(n, dtype=int)
+    lex_rank[np.argsort(-(lex * title_mask))] = np.arange(n)
+    K = 60.0
+    scores = (0.7 / (K + dense_rank + 1) + 0.3 / (K + lex_rank + 1)).astype(np.float32)
+    # rare-token exact hit: identifiers win (financial-docs 2026: BM25 beats dense here)
+    lowered = [t.lower() for t in texts]
+    for w in set(re.findall(r"\w{4,}", text.lower())) - STOP:
+        df = sum(1 for t in lowered if w in t)
+        if 0 < df <= 3:
+            scores += np.array([0.03 if w in t else 0.0 for t in lowered], dtype=np.float32)
+    scores += learn_lookup(con, text, paths, q)  # additive post-fusion
     top = np.argsort(-scores)[:k]
     return top, paths, heads, texts, scores
 
@@ -299,6 +315,8 @@ def update_index(fpath):
 
 def append(file_ref, heading, text, dry=False):
     p = real_path(file_ref)
+    if not p.exists():
+        sys.exit(f"{file_ref}: not found")
     t = p.read_text(errors="replace")
     line = f"- {DATE} {text.strip()}\n"
     if heading == "(top)":
