@@ -7,7 +7,7 @@ index_convention = "list"             # "list" = maintain INDEX.md links, "none"
 exclude_dirs = ["archive/", "runs/", "media/", "anexos/", "evidencias/", "devlog/", "tabs/"]
 exclude_files = ["LOG.md", "INDEX.md"]
 
-# Extra files outside the vault to index (keyed by display name)
+# Extra files outside the vault to index (TOML: still inside [vault] table)
 external = []
 # external = ["~/.local/share/notes/open-loops.md"]
 

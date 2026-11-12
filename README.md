@@ -44,7 +44,11 @@ Requires Python 3.11+ (stdlib + numpy only).
 
 ## Roadmap
 
-- [ ] HTTP API mode (same ops for agents over /query /append /learn)
-- [ ] Cross-encoder rerank stage
+- [x] RRF fusion (validated default: ES/Qdrant/SIGIR-2025 LiveRAG) + rare-token
+      identifier bonus + title field boost — regression-tested on real QA pairs
+- [x] HTTP API mode (`server.py`: /query /find /append /frontmatter /new-note
+      /learn /reindex /health, optional bearer token)
+- [ ] Cross-encoder rerank stage (biggest validated jump: Recall@5 0.695→0.816
+      on T2-RAGBench; llama.cpp can host bge-reranker)
 - [ ] Learned per-user term statistics (IDF from your vault)
 - [ ] Alias mining (surface "the X thing" candidates from your own notes)
