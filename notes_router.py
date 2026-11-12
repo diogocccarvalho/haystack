@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""notes-router — semantic router + deterministic editor for a local markdown vault.
+
+Local, zero-API: points at ANY OpenAI-compatible /v1/embeddings endpoint
+(llama.cpp, Ollama, LM Studio, remote). Learns from your corrections.
+
+Usage:
+  notes-router.py reindex                  # incremental reindex
+  notes-router.py query <text> [-k N]      # top-N: path<TAB>heading<TAB>score<TAB>snippet
+  notes-router.py find-file <words>        # best path only
+  notes-router.py append <file> <heading> <text> [--dry-run]
+  notes-router.py frontmatter <file> k=v [--dry-run]
+  notes-router.py new-note <dir> <name> ["Title"] [--dry-run]
+  notes-router.py learn "<query>" <path>   # teach a correction
+  notes-router.py review <text>            # interactive feedback loop
+  notes-router.py audit                    # reindex + run QA pairs (exit 1 on miss)
+
+Config: ~/.config/notes-router/config.toml (override with NR_CONFIG).
+See config.toml in this repo for every option.
+"""
+import hashlib
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+import tomllib
+import urllib.request
+from pathlib import Path
+
+import numpy as np
+
+CFG_PATH = Path(os.environ.get("NR_CONFIG", Path.home() / ".config/notes-router/config.toml"))
+if not CFG_PATH.exists():
+    sys.exit(f"no config at {CFG_PATH} — copy config.toml from the repo and edit vault.path")
+
+with open(CFG_PATH, "rb") as f:
+    _cfg = tomllib.load(f)
+
+VAULT = Path(_cfg["vault"]["path"]).expanduser()
+INDEX_CONV = _cfg["vault"].get("index_convention", "list")
+SKIP_PARTS = tuple(_cfg["vault"].get("exclude_dirs", []))
+SKIP_FILES = set(_cfg["vault"].get("exclude_files", []))
+EXTERNAL = {Path(s).expanduser(): "external/" + Path(s).name
+            for s in _cfg.get("external", [])}
+DB = Path(_cfg["index"]["db"]).expanduser()
+EMBD_URL = _cfg["embeddings"]["url"]
+EMBD_MODEL = _cfg["embeddings"].get("model", "")
+QA_FILE = Path(_cfg["audit"]["qa_file"]).expanduser()
+LOG_DIR = DB.parent
+DATE = time.strftime("%Y-%m-%d")
+
+
+def embed(texts):
+    payload = {"input": texts}
+    if EMBD_MODEL:
+        payload["model"] = EMBD_MODEL
+    req = urllib.request.Request(
+        EMBD_URL, json.dumps(payload).encode(), {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.load(r)
+    return np.array([d["embedding"] for d in data["data"]], dtype=np.float32)
+
+
+def chunks_of(path):
+    """[(heading, text)] per file: title blob + one chunk per ## section."""
+    t = path.read_text(errors="replace")
+    lines = t.split("\n")
+    title_blob = []
+    out, cur_head, cur = [], "(top)", []
+    for ln in lines[:10]:
+        if ln.startswith(("title:", "# ")) and len(ln) > 4:
+            title_blob.append(ln)
+    title_blob_text = "\n".join(title_blob or lines[:3])
+    out.append(("(title)", title_blob_text))
+    for ln in lines:
+        if ln.startswith("## "):
+            if cur:
+                out.append((cur_head, "\n".join(cur)))
+            cur_head, cur = ln[3:].strip(), []
+        else:
+            cur.append(ln)
+    if cur:
+        out.append((cur_head, "\n".join(cur)))
+    # list-heavy files: one chunk per ~6 lines — big windows dilute
+    n_list = sum(1 for ln in lines if ln.strip().startswith(("- ", "* ")))
+    if n_list > 20 and len(lines) > 60:
+        out = [("(title)", title_blob_text)]
+        buf, head_now = [], cur_head
+        for ln in lines:
+            if ln.startswith("## "):
+                if buf:
+                    out.append((head_now or "(list)", title_blob_text + "\n" + "\n".join(buf)))
+                head_now, buf = ln[3:].strip(), [ln]
+            else:
+                buf.append(ln)
+                if len([b for b in buf if b.strip()]) >= 6:
+                    out.append((head_now or "(list)", title_blob_text + "\n" + "\n".join(buf)))
+                    buf = []
+        if buf and len([b for b in buf if b.strip()]):
+            out.append((head_now or "(list)", title_blob_text + "\n" + "\n".join(buf)))
+    else:
+        # sections longer than ~1 window: slide windows so deep lines surface
+        long = []
+        for h, txt in out:
+            if len(txt) > 1000:
+                step, win = 800, 1000
+                i = 0
+                while i < len(txt):
+                    seg = txt[i:i + win].strip()
+                    if len(seg) > 200:
+                        long.append((f"{h} · L{i + 1}", seg))
+                    i += step
+            else:
+                long.append((h, txt))
+        out = long
+    return [(h, txt.strip()[:1000]) for h, txt in out if txt.strip()]  # BGE ctx=512 tok
+
+
+def real_path(rel):
+    for src, name in EXTERNAL.items():
+        if name == rel:
+            return src
+    return VAULT / rel
+
+
+def rel_of(p):
+    for src, name in EXTERNAL.items():
+        if src == p:
+            return name
+    try:
+        return str(p.relative_to(VAULT))
+    except ValueError:
+        return "external/" + p.name
+
+
+def walk():
+    for p in EXTERNAL:
+        if p.exists():
+            yield p
+    for p in sorted(VAULT.rglob("*.md")):
+        rel = str(p.relative_to(VAULT))
+        if rel in SKIP_FILES or any(part in rel for part in SKIP_PARTS):
+            continue
+        yield p
+
+
+def connect():
+    import sqlite3
+    con = sqlite3.connect(DB)
+    con.execute("""CREATE TABLE IF NOT EXISTS chunks(
+        path TEXT, heading TEXT, hash TEXT, vec BLOB, text TEXT)""")
+    con.execute("CREATE TABLE IF NOT EXISTS files(path TEXT, mtime REAL, hash TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS learned(qhash TEXT, qtext TEXT, path TEXT, hits INT)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_c ON chunks(path)")
+    return con
+
+
+def reindex(con):
+    db_files = {r[0]: (r[1], r[2]) for r in con.execute("SELECT path, mtime, hash FROM files")}
+    cur = con.cursor()
+    n_new = n_del = 0
+    seen = set()
+    for p in walk():
+        rel = rel_of(p)
+        seen.add(rel)
+        mt, h0 = db_files.get(rel, (0, None))
+        raw = p.read_bytes()
+        h = hashlib.sha256(raw).hexdigest()[:16]
+        if h0 == h:
+            continue
+        cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
+        cur.execute("DELETE FROM files WHERE path=?", (rel,))
+        cs = chunks_of(p)
+        vecs = embed([c[1] for c in cs])
+        for (head, txt), v in zip(cs, vecs):
+            cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
+                        (rel, head, h, v.astype(np.float32).tobytes(), txt))
+        cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
+        n_new += 1
+    for rel in set(db_files) - seen:
+        cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
+        cur.execute("DELETE FROM files WHERE path=?", (rel,))
+        n_del += 1
+    con.commit()
+    print(f"indexed: {n_new} updated, {n_del} removed, {sum(1 for _ in walk())} files")
+
+
+STOP = set("the a an of about my i me that this thing stuff should where do is are for on in to with and or".split())
+
+
+def learn_lookup(con, text, paths, q):
+    """Past corrections boost identical/similar queries (and their folder)."""
+    rows = list(con.execute("SELECT qtext, path, hits FROM learned"))
+    if not rows:
+        return np.zeros(len(paths))
+    qs = embed([r[0] for r in rows])
+    sims = qs @ q
+    boost = np.zeros(len(paths))
+    for (qtext, path, hits), sim in zip(rows, sims):
+        if sim > 0.75:
+            for i, p in enumerate(paths):
+                if p == path or p.startswith(path.rsplit("/", 1)[0]):
+                    boost[i] += 0.10 * sim * min(hits, 3)
+    return boost
+
+
+def lexical_boost(text, texts):
+    toks = [w for w in re.findall(r"\w{4,}", text.lower()) if w not in STOP]
+    if not toks:
+        return np.zeros(len(texts))
+    # IDF weighting: common words count little, distinctive ones count
+    lowered = [t.lower() for t in texts]
+    n = len(texts)
+    boost = np.zeros(n, dtype=np.float32)
+    for w in set(toks):
+        df = sum(1 for t in lowered if w in t) or 1
+        idf = 0.25 * min(3.0, math.log(n / df) + 0.5)
+        tf = np.minimum(np.array([t.count(w) for t in lowered], dtype=np.float32), 2.0)
+        boost += idf * tf
+    return 0.10 * boost
+
+
+def load_all(con):
+    rows = list(con.execute("SELECT path, heading, vec, text FROM chunks"))
+    paths = [r[0] for r in rows]
+    heads = [r[1] for r in rows]
+    mat = np.vstack([np.frombuffer(r[2], dtype=np.float32) for r in rows])
+    texts = [r[3] for r in rows]
+    return paths, heads, mat, texts
+
+
+def rank(con, text, k=5):
+    paths, heads, mat, texts = load_all(con)
+    q = embed([text])[0]
+    scores = mat @ q
+    scores += learn_lookup(con, text, paths, q)
+    scores += lexical_boost(text, texts)
+    scores = np.array([s * 1.15 if h in ("(title)", "(top)") else s
+                       for s, h in zip(scores, heads)])
+    top = np.argsort(-scores)[:k]
+    return top, paths, heads, texts, scores
+
+
+def query(con, text, k=5):
+    top, paths, heads, texts, scores = rank(con, text, k)
+    for i in top:
+        snip = re.sub(r"\s+", " ", str(texts[i])[:180])
+        print(f"{paths[i]}\t{heads[i]}\t{scores[i]:.3f}\t{snip}")
+    return top, paths
+
+
+def find_file(con, words):
+    top, paths, _, _, _ = rank(con, " ".join(words), k=1)
+    if len(top):
+        print(str(real_path(paths[int(top[0])])))
+
+
+def log_edit(op, detail):
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOG_DIR / "notes-editor.log", "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M')} {op} {detail}\n")
+
+
+def index_one(con, p):
+    rel = rel_of(p)
+    cur = con.cursor()
+    cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
+    cur.execute("DELETE FROM files WHERE path=?", (rel,))
+    cs = chunks_of(p)
+    vecs = embed([c[1] for c in cs])
+    h = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+    for (head, txt), v in zip(cs, vecs):
+        cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
+                    (rel, head, h, v.astype(np.float32).tobytes(), txt))
+        cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
+    con.commit()
+
+
+def update_index(fpath):
+    """Ensure INDEX.md has a line for fpath (only when index_convention=list)."""
+    if INDEX_CONV != "list" or rel_of(fpath).startswith("external/"):
+        return
+    idx = VAULT / "INDEX.md"
+    rel = str(fpath.relative_to(VAULT))
+    t = idx.read_text(errors="replace")
+    if rel in t:
+        return
+    title = ""
+    txt = fpath.read_text(errors="replace")
+    if txt.startswith("---"):
+        m = re.search(r'title:\s*"?([^"\n]+?)"?\s*$', txt.split("---")[1], re.M)
+        title = m.group(1) if m else fpath.stem
+    line = f"- [[{rel}]] — {title or fpath.stem} (auto-added {DATE})"
+    idx.write_text(t.rstrip() + "\n" + line + "\n")
+
+
+def append(file_ref, heading, text, dry=False):
+    p = real_path(file_ref)
+    t = p.read_text(errors="replace")
+    line = f"- {DATE} {text.strip()}\n"
+    if heading == "(top)":
+        new = t.rstrip() + "\n" + line
+    else:
+        pat = rf"^(## {re.escape(heading)}\n)"
+        m = re.search(pat, t, re.M)
+        if not m:
+            sys.exit(f"{file_ref}: heading '{heading}' not found")
+        new = t[:m.end()] + line + t[m.end():]
+    if dry:
+        print(f"[dry-run] would append under '## {heading}' in {p}:\n  {line.strip()}")
+        return
+    p.write_text(new)
+    update_index(p)
+    log_edit("append", f"{file_ref}#{heading} {text[:60]}")
+    index_one(connect(), p)
+    print(f"appended -> {file_ref} #{heading}")
+
+
+def set_frontmatter(file_ref, kv, dry=False):
+    p = real_path(file_ref)
+    key, val = kv.split("=", 1)
+    t = p.read_text(errors="replace")
+    if not t.startswith("---"):
+        new = f"---\n{key}: {val}\n---\n\n" + t
+    else:
+        head, rest = t.split("---", 2)[1], "---".join(t.split("---")[2:])
+        if re.search(rf"^{key}:", head, re.M):
+            head = re.sub(rf"^{key}:.*$", f"{key}: {val}", head, flags=re.M)
+        else:
+            head = head.rstrip() + f"\n{key}: {val}\n"
+        new = "---" + head + "---" + rest
+    if dry:
+        print(f"[dry-run] would set {key}={val} in {p}")
+        return
+    p.write_text(new)
+    update_index(p)
+    log_edit("frontmatter", f"{file_ref} {key}={val}")
+    index_one(connect(), p)
+    print(f"{file_ref}: {key}={val}")
+
+
+def new_note(dirrel, name, title=None, dry=False):
+    d = VAULT / dirrel
+    p = d / f"{name}.md"
+    if dry:
+        print(f"[dry-run] would create {p} (templated frontmatter + INDEX line)")
+        return
+    d.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        sys.exit(f"{p} exists")
+    p.write_text(f'---\ntitle: "{title or name}"\ndate: {DATE}\nstatus: active\n---\n\n# {title or name}\n\n')
+    update_index(p)
+    log_edit("new-note", str(p))
+    index_one(connect(), p)
+    print(p)
+
+
+def learn(con, qtext, path, commit=True):
+    if not real_path(path).exists():
+        sys.exit(f"{path}: not in vault")
+    cur = con.cursor()
+    row = cur.execute("SELECT qhash, hits FROM learned WHERE qtext=? AND path=?",
+                      (qtext, path)).fetchone()
+    if row:
+        cur.execute("UPDATE learned SET hits=? WHERE qhash=? AND path=?",
+                    (row[1] + 1, row[0], path))
+    else:
+        cur.execute("INSERT INTO learned VALUES(?,?,?,1)",
+                    (hashlib.sha256(qtext.encode()).hexdigest()[:16], qtext, path))
+    if commit:
+        con.commit()
+    log_edit("learn", f"{qtext[:60]} -> {path}")
+    print(f"learned: {qtext[:60]!r} -> {path}")
+
+
+def load_qa():
+    if not QA_FILE.exists():
+        sys.exit(f"no QA pairs yet ({QA_FILE}). Seed them: notes-router.py learn "
+                 "\"<query>\" <path>, or copy a qa.json template into that file.")
+    data = json.loads(QA_FILE.read_text())
+    return data.get("pairs", [])
+
+
+def audit(con):
+    pairs = load_qa()
+    if not pairs:
+        sys.exit("qa.json has no pairs — audit needs ground truth to be meaningful.")
+    reindex(con)
+    passed = failed = 0
+    misses = []
+    for qtext, expect in pairs:
+        top, paths = query(con, qtext, k=5)
+        ranked = [paths[i] for i in top]
+        if any(p.startswith(expect) or p == expect for p in ranked[:3]):
+            passed += 1
+        else:
+            failed += 1
+            misses.append((qtext, expect, ranked[0]))
+    line = f"{time.strftime('%Y-%m-%d %H:%M')} audit: {passed}/{passed + failed} passed"
+    if misses:
+        line += " | misses: " + "; ".join(
+            f"{q[:40]!r} want {e[:50]} got {g}" for q, e, g in misses)
+    with open(LOG_DIR / "audit.log", "a") as f:
+        f.write(line + "\n")
+    print(line)
+    sys.exit(1 if misses else 0)
+
+
+def review(con, text):
+    """Interactive feedback loop: rank, accept or teach."""
+    top, paths, heads, texts, scores = rank(con, text, k=5)
+    for n, i in enumerate(top, 1):
+        snip = re.sub(r"\s+", " ", str(texts[i])[:100])
+        print(f"{n}. {paths[i]}  ({heads[i]}, {scores[i]:.2f})\n   {snip}")
+    print("Reply with the number that's right (1-5), 'q' to quit, or type the correct path.")
+    try:
+        ans = input("> ").strip()
+    except EOFError:
+        return
+    if ans.isdigit() and 1 <= int(ans) <= len(top):
+        learn(con, text, paths[int(top[int(ans) - 1])])
+    elif ans and ans != "q":
+        learn(con, text, ans)
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        sys.exit(__doc__)
+    cmd = a[0]
+    dry = "--dry-run" in a
+    a = [x for x in a if x != "--dry-run"]
+    con = connect()
+    if cmd == "reindex":
+        reindex(con)
+    elif cmd == "query":
+        k = 5
+        if "-k" in a:
+            k = int(a[a.index("-k") + 1])
+            a = a[:a.index("-k")] + a[a.index("-k") + 2:]
+        query(con, " ".join(a[1:]), k)
+    elif cmd == "find-file":
+        find_file(con, a[1:])
+    elif cmd == "append":
+        append(a[1], a[2], " ".join(a[3:]), dry)
+    elif cmd == "frontmatter":
+        set_frontmatter(a[1], a[2], dry)
+    elif cmd == "new-note":
+        new_note(a[1], a[2], a[3] if len(a) > 3 and not a[3].startswith("-") else None, dry)
+    elif cmd == "learn":
+        learn(con, " ".join(a[1:-1]).strip('"'), a[-1])
+    elif cmd == "review":
+        review(con, " ".join(a[1:]))
+    elif cmd == "audit":
+        audit(con)
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()
