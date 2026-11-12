@@ -85,6 +85,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/reindex":
                 nr.reindex(con)
                 self._send(200, {"ok": True})
+            elif self.path == "/aliases":
+                out = nr.mine_aliases(con)
+                self._send(200, [{"folder": f, "candidates": c} for f, c in out])
             else:
                 self._send(404, {"error": "not found"})
         except SystemExit as e:          # nr uses sys.exit(str) for user errors

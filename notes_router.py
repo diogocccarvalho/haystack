@@ -13,6 +13,7 @@ Usage:
   notes-router.py new-note <dir> <name> ["Title"] [--dry-run]
   notes-router.py learn "<query>" <path>   # teach a correction
   notes-router.py review <text>            # interactive feedback loop
+  notes-router.py aliases                  # mine nickname candidates per folder
   notes-router.py audit                    # reindex + run QA pairs (exit 1 on miss)
 
 Config: ~/.config/notes-router/config.toml (override with NR_CONFIG).
@@ -427,6 +428,37 @@ def audit(con):
     sys.exit(1 if misses else 0)
 
 
+def mine_aliases(con, min_folder_df=2, max_corpus_df=3, top=5):
+    """Alias mining: tokens distinctive to one folder (frequent inside, rare
+    outside) are likely the user's nicknames for that project. Candidate list
+    for `learn` — nothing is auto-taught."""
+    rows = list(con.execute("SELECT path, heading, text FROM chunks WHERE heading='(title)'"))
+    corpus = [t.lower() for _, _, t in rows]
+    n = len(corpus)
+    leaf = {}
+    for path, _, text in rows:
+        folder = "/".join(path.split("/")[:-1]) if "/" in path else path
+        leaf.setdefault(folder, []).append((path, text.lower()))
+    out = []
+    for folder, items in sorted(leaf.items()):
+        nfiles = len(items)
+        if nfiles < min_folder_df:
+            continue
+        cands = []
+        for w in {x for _, t in items for x in re.findall(r"\w{4,}", t) if x not in STOP}:
+            in_folder = sum(1 for _, t in items if w in t)
+            df = sum(1 for t in corpus if w in t)
+            # distinctive = repeated inside the folder, rare outside it
+            if in_folder >= 2 and df <= max_corpus_df:
+                cands.append((w, in_folder, df))
+        cands.sort(key=lambda x: (-x[1], x[2]))
+        if cands:
+            out.append((folder, cands[:top]))
+    for folder, cands in out:
+        print(folder + "\t" + ", ".join(f"{w} (x{fi}, df{df})" for w, fi, df in cands))
+    return out
+
+
 def review(con, text):
     """Interactive feedback loop: rank, accept or teach."""
     top, paths, heads, texts, scores = rank(con, text, k=5)
@@ -472,6 +504,8 @@ def main():
         learn(con, " ".join(a[1:-1]).strip('"'), a[-1])
     elif cmd == "review":
         review(con, " ".join(a[1:]))
+    elif cmd == "aliases":
+        mine_aliases(con)
     elif cmd == "audit":
         audit(con)
     else:
