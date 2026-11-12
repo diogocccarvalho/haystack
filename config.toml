@@ -1,0 +1,26 @@
+# notes-router configuration
+# Copy to ~/.config/notes-router/config.toml (or set NR_CONFIG).
+
+[vault]
+path = "~/notes"                      # your markdown vault root
+index_convention = "list"             # "list" = maintain INDEX.md links, "none" = don't
+exclude_dirs = ["archive/", "runs/", "media/", "anexos/", "evidencias/", "devlog/", "tabs/"]
+exclude_files = ["LOG.md", "INDEX.md"]
+
+# Extra files outside the vault to index (keyed by display name)
+external = []
+# external = ["~/.local/share/notes/open-loops.md"]
+
+[index]
+db = "~/.cache/notes-router/index.sqlite"
+
+[embeddings]
+# Any OpenAI-compatible /v1/embeddings endpoint works:
+# llama.cpp server, Ollama (/v1), LM Studio, a remote API.
+url = "http://127.0.0.1:8082/v1/embeddings"
+model = ""                            # some endpoints require a model name (e.g. "bge-small-en-v1.5")
+
+[audit]
+# Ground-truth QA pairs for `notes-router audit`. Start empty;
+# seed it with real queries via `learn` / `review`.
+qa_file = "~/.config/notes-router/qa.json"
