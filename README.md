@@ -51,4 +51,5 @@ Requires Python 3.11+ (stdlib + numpy only).
 - [ ] Cross-encoder rerank stage (biggest validated jump: Recall@5 0.695→0.816
       on T2-RAGBench; llama.cpp can host bge-reranker)
 - [ ] Learned per-user term statistics (IDF from your vault)
-- [ ] Alias mining (surface "the X thing" candidates from your own notes)
+- [x] Alias mining (`aliases` command + /aliases endpoint): distinctive tokens per leaf folder, offered as `learn` candidates — nothing auto-taught
+- [ ] HTTP /review endpoint (interactive accept/teach)
