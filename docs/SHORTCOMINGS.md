@@ -1,6 +1,6 @@
 # SHORTCOMINGS.md — failure catalog of the plugins
 
-Purpose (Diogo, 2026-11-13): every shortcoming found while dogfooding the
+Purpose (the author, 2026-11-13): every shortcoming found while dogfooding the
 plugins (notes-router now, crystallization later) becomes a spec line for the
 from-scratch architecture. Each entry: what fails, why, the plugin patch, and
 the architectural implication. The plugin patches are mortised wood; the
@@ -71,7 +71,7 @@ implications are the design.
 
 ## R7. Small local models burn their budget on reasoning before answering
 - What: eval-gen with LFM3-1.7B produced empty content — 4271 chars of
-  reasoning, zero answer, at max_tokens=400. Diogo's call: don't use a small
+  reasoning, zero answer, at max_tokens=400. the author's call: don't use a small
   model during development at all; use the agent (me) as generator, then
   audit small-model failures later.
 - Plugin patch: enable_thinking=False works; agent-generated eval set is the
@@ -83,7 +83,7 @@ implications are the design.
   paper observation from the crystallization README, met in production.)
 
 ## R9. Known-but-unfixed (tracked, not hidden)
-- ~~Chunker heuristics tuned on ONE vault (Diogo's); no evidence they
+- ~~Chunker heuristics tuned on ONE vault (the author's); no evidence they
   generalize.~~ → VALIDATED 2026-11-13: foreign-vault known-answer eval on
   llama.cpp docs/ (55 files): 33 agent-authored owner-style pairs with
   verified targets (nr-foreign-qa.json, scratch), Recall@3 1.000 MRR 0.970.
@@ -104,7 +104,7 @@ implications are the design.
 - What: llama.cpp's docs/ (55 files, URL/code-dense markdown) — one chunk
   tokenized denser than the embedder's 512-token context; llama-server
   returned 500 for the WHOLE batch and reindex died at file 1 of 55. The
-  1000-char cap was tuned on prose (Diogo's vault) and silently assumed
+  1000-char cap was tuned on prose (the author's vault) and silently assumed
   tokens ~= chars/4.
 - Plugin patch: embed_resilient — split-on-failure down to single chunks;
   over-context chunks are skipped + logged, never fatal.
@@ -126,10 +126,10 @@ implications are the design.
   (63/68 → 5 misses diagnosed to root causes);  R7 found building eval-gen; R10 found in the foreign-vault robustness test.
 - Fix status: R1 ✓ (pins), R2 ✓ (fallback keeps pins), R4 ✓ (learned.json),
   R5 ✓ (INDEX excluded from rerank), R6 ✓ (family-level eval truth),
-  R7 ✓ (enable_thinking=False; agent-as-generator per Diogo), R3 partial
+  R7 ✓ (enable_thinking=False; agent-as-generator per the author), R3 partial
   (cap 600 chars; L6 GGUF tested 2026-11-13: 2x faster, -16pp Recall@3 on
   personal vault → REJECTED, see RESEARCH.md P1 addendum; knob is top=10),
-  R8 removed by Diogo's call (2026-11-13): agent-in-the-loop is by design,
+  R8 removed by the author's call (2026-11-13): agent-in-the-loop is by design,
   not a shortcoming,
   R9 mostly closed (foreign-vault quality VALIDATED 1.000/0.970; residual:
   circularity, eval size, embedder generation), R10 ✓ (embed_resilient).

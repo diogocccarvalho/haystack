@@ -1,11 +1,11 @@
 [vault]
-path = "/home/diogo/.hermes/cache/scratch/nr-foreign/docs"
+path = "~/.cache/haystack-test/foreign/docs"
 index_convention = "list"
 exclude_dirs = []
 exclude_files = []
 external = []
 [index]
-db = "/home/diogo/.hermes/cache/scratch/nr-foreign.sqlite"
+db = "~/.cache/haystack-test/foreign.sqlite"
 [embeddings]
 url = "http://127.0.0.1:8082/v1/embeddings"
 model = ""
@@ -14,4 +14,4 @@ url = "http://127.0.0.1:8084"
 top = 20
 
 [audit]
-qa_file = "/home/diogo/.hermes/cache/scratch/nr-foreign-qa.json"
+qa_file = "~/.cache/haystack-test/foreign-qa.json"
