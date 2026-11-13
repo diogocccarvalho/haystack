@@ -21,7 +21,7 @@ jobs:
           tar xzf ll.tar.gz
           sudo mv llama-*/ /opt/llama-nightly
           echo "/opt/llama-nightly" >> $GITHUB_PATH
-          llama-server --version
+          /opt/llama-nightly/llama-server --version
       - name: download bge-small model
         run: |
           mkdir -p ~/.local/share/haystack/models
