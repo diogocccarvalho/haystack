@@ -460,8 +460,8 @@ def append(file_ref, heading, text, dry=False):
     if heading == "(top)":
         new = t.rstrip() + "\n" + line
     else:
-        pat = rf"^(## {re.escape(heading)}\n)"
-        m = re.search(pat, t, re.M)
+        m = (re.search(rf"^## {re.escape(heading)}\n", t, re.M)
+             or re.search(rf"^# {re.escape(heading)}\n", t, re.M))
         if not m:
             sys.exit(f"{file_ref}: heading '{heading}' not found")
         new = t[:m.end()] + line + t[m.end():]
@@ -517,7 +517,17 @@ def new_note(dirrel, name, title=None, dry=False):
 
 
 def learn(con, qtext, path, commit=True):
-    if not (real_path(path).is_file() or real_path(path).is_dir()):
+    rp = real_path(path)
+    # Containment: the resolved path must live inside the vault, or be one of
+    # the config's explicitly listed EXTERNAL files. Existence alone is not
+    # enough — VAULT/"../../etc/passwd" resolves to a real system file.
+    allowed_external = rp in EXTERNAL.values() if EXTERNAL else False
+    if not allowed_external:
+        try:
+            rp.resolve().relative_to(VAULT.resolve())
+        except ValueError:
+            sys.exit(f"{path}: not a vault path")
+    if not (rp.is_file() or rp.is_dir()):
         sys.exit(f"{path}: not a vault path")
     rows = _load_learned()
     for row in rows:
