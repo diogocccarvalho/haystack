@@ -65,6 +65,24 @@ def embed(texts):
     return np.array([d["embedding"] for d in data["data"]], dtype=np.float32)
 
 
+def embed_resilient(texts):
+    """R10: a chunk denser than the embedder's context 500s the whole batch —
+    split-on-failure and skip the offending chunk instead of dying (a foreign
+    corpus with URLs/code tokens hit this on an otherwise healthy server).
+    Returns (vecs, [kept indices])."""
+    try:
+        return embed(texts), list(range(len(texts)))
+    except urllib.error.HTTPError:
+        if len(texts) == 1:
+            log_edit("embed-skip", f"chunk exceeds ctx, skipped: {texts[0][:60]!r}")
+            return np.zeros((0, 384), dtype=np.float32), []
+        mid = len(texts) // 2
+        v1, k1 = embed_resilient(texts[:mid])
+        v2, k2 = embed_resilient(texts[mid:])
+        k2 = [i + mid for i in k2]
+        return np.vstack([v1, v2]), k1 + k2
+
+
 def chunks_of(path, rel=None):
     """[(heading, text)] per file: title blob + one chunk per ## section.
 
@@ -222,10 +240,11 @@ def reindex(con):
         cur.execute("DELETE FROM files WHERE path=?", (rel,))
         cs = chunks_of(p, rel)
         if cs:  # empty/near-empty files: no chunks to embed (embed([]) 400s)
-            vecs = embed([c[1] for c in cs])
-            for (head, txt), v in zip(cs, vecs):
+            vecs, kept = embed_resilient([c[1] for c in cs])
+            for pos, i in enumerate(kept):
+                head, txt = cs[i]
                 cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
-                            (rel, head, h, v.astype(np.float32).tobytes(), txt))
+                            (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
         cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
         n_new += 1
     for rel in set(db_files) - seen:
@@ -382,10 +401,11 @@ def index_one(con, p):
     cur.execute("DELETE FROM files WHERE path=?", (rel,))
     cs = chunks_of(p, rel)
     h = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
-    vecs = embed([c[1] for c in cs]) if cs else []
-    for (head, txt), v in zip(cs, vecs):
+    vecs, kept = embed_resilient([c[1] for c in cs]) if cs else (np.zeros((0, 384), dtype=np.float32), [])
+    for pos, i in enumerate(kept):
+        head, txt = cs[i]
         cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
-                    (rel, head, h, v.astype(np.float32).tobytes(), txt))
+                    (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
         cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
     con.commit()
 
