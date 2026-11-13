@@ -2,15 +2,17 @@
 
 **A semantic router for your markdown vault — built for AI agents, tuned by your own corrections.**
 
-Static search engines index documents. Haystack also indexes *you*: every time
-a query misses and you correct it, the correction becomes a permanent,
-self-testing rule — so the agent stops re-reading the wrong files. All local,
-zero cloud, one 35 MB embedding model.
+I run an AI agent (Hermes) as the operating layer over my life: work projects,
+a second brain, research dumps — ~150 markdown notes. The model was cheap
+(flash-tier, my whole stack runs on ~66.9M tokens ≈ $1.85/month) but the *bill
+had a hidden shape*: every fuzzy question — "that project about the batches" —
+meant grep, wrong guesses, re-reading the same files, and the context rot that
+follows. And the same miss would repeat tomorrow.
 
-## The problem it solves
-
-If you run an AI agent over a personal knowledge base (a second brain, work
-notes, project docs), the token bill has a shape most people don't notice:
+So I built Haystack for it — and had the agent build most of it with me.
+Static search indexes documents; Haystack also indexes *you*: every time a
+query misses and you correct it, the correction becomes a permanent,
+self-testing rule. All local, zero cloud, one 35 MB embedding model.
 
 | | Without haystack | With haystack |
 |---|---|---|
@@ -19,10 +21,10 @@ notes, project docs), the token bill has a shape most people don't notice:
 | Did retrieval get worse? | nobody knows | `audit` runs your corrections as regression tests; any miss fails CI-style |
 | Wrong answer from the agent | you fix the note, the pattern repeats | you say "that's not what I want" → `learn` → permanent + tested |
 
-The author's whole agent stack (Hermes, flash-tier models, 76 sessions/month)
-runs on **~66.9M tokens ≈ $1.85/month** — because the agent reads *the right
-200 characters* instead of *the wrong 5 files*. Retrieval quality is what
-keeps that number down. That's what haystack optimizes.
+Dogfood note: the agent that uses Haystack daily also built it — every gate
+in this repo (sim suite, QA audit, A/B rejections) was run by the agent
+against its own index, which is exactly how the setup script's bugs got
+caught. `audit` 8/8 + 7/7 learned corrections at time of writing.
 
 ## How it works
 
