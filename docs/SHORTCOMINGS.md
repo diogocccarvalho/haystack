@@ -7,7 +7,7 @@ crystallization repo (docs/design.md) — haystack keeps the observations, the
 from-scratch architecture gets the rules.
 
 ## R1. Reranker overrode user corrections (found live, 2026-11-13)
-- What: query "deploying webmethods packages how" — the taught file dropped
+- What: query "deploying packages how" (a real taught-route miss) — the file dropped
   out of top-3 BECAUSE the cross-encoder reordered it away. The learned
   boost fed the fusion scores, but rerank then ignored scores.
 - Plugin patch: pinned paths — learned corrections are placed ahead of
