@@ -101,6 +101,17 @@ Q8_0. Next lever if latency ever matters: [rerank] top=10 (~450ms at L12
 speed). The MO7YW4NG "same accuracy class" claim does not transfer to
 long-prose note retrieval.
 
+**P3 benchmark (2026-11-13): granite via Ollama — REJECTED on this vault.**
+Ollama's `granite-embedding` (30M params, 384-dim — drop-in for bge-small's
+384, same /v1/embeddings shape). A/B, same index pipeline, fresh DBs:
+- Personal vault: bge 1.000 Recall@3 / 0.926 MRR; granite 0.926 / 0.858.
+- Foreign (llama.cpp docs): bge 1.000 / 0.970; granite 1.000 / 0.955.
+- Embed latency: identical (~4ms/query both).
+bge-small stays the default. Caveat: this is granite-30M-english-R2, NOT the
+granite-97m-multilingual-r2 from the research above (no Ollama library
+entry; needs an ONNX/Ollama-compatible host that doesn't exist today). The
+multilingual headroom question stays open only for non-English vaults.
+
 **P5 — Time-aware recall** (Reglos: time/place/recency routes fused by RRF).
 Only relevant if the vault accumulates time-sensitive notes (open-loops
 already acts as the recency layer). Defer.
