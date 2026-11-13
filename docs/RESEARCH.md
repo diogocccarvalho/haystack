@@ -67,7 +67,7 @@ Effort: docs + one benchmark run when switching.
 (words in >50% of the corpus are dropped, any language) replaces the hardcoded
 English STOP once n>=50 chunks. Audit 8/8 + sim 48/48 after the change.
 
-## Runtime profiling (2026-11-13, Diogo's rule: >1s ops must be optimized or researched)
+## Runtime profiling (2026-11-13, the author's rule: >1s ops must be optimized or researched)
 Measured (107 files, 1476 chunks, 6 learned entries): embed 1 query 39ms,
 lexical_boost 55ms, learn_lookup embed 61ms, alias mining 14ms, reindex
 incremental ~0.2s. The ONLY >1s operation was the cross-encoder rerank HTTP
