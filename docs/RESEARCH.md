@@ -89,7 +89,7 @@ RE-LATIVE ranking is what pick-encoder is for.
   server sits at ~2% CPU with /dev/dri open — CPU threads returned to the
   desktop. iGPU is ~2.5x SLOWER per batch for these tiny models (transfer
   overhead) — the win is thread/RAM offload, not speed. CPU build kept as
-  instant rollback. LFM3 and d1 still CPU (candidates for the same swap).
+  instant rollback. (LFM3/d1 are Hermes-side services, out of scope here.)
 - RAM (15.4GB total, 13.0GB used): LFM3 1.2GB (8k ctx), d1 1.2GB, granite
   fp32 580MB while running (A/B-only, not a service), bge+reranker ~90MB.
 - Rerank top A/B (2026-11-13, 53-pair synthetic set): top=20 33.7s vs top=10
