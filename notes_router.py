@@ -243,12 +243,22 @@ if "urllib.request" not in sys.modules:
 
 
 def lexical_boost(text, texts):
-    toks = [w for w in re.findall(r"\w{4,}", text.lower()) if w not in STOP]
+    lowered = [t.lower() for t in texts]
+    n = len(texts)
+    raw = re.findall(r"\w{4,}", text.lower())
+    if n >= 50:
+        # learned stopwording: words present in most of the corpus are
+        # non-discriminative in ANY language (IDF floor, replaces the
+        # hardcoded English STOP once the corpus is big enough)
+        toks = [w for w in raw if w not in STOP]
+        for w in set(raw):
+            if sum(1 for t in lowered if w in t) > 0.5 * n:
+                toks = [t for t in toks if t != w]
+    else:
+        toks = [w for w in raw if w not in STOP]
     if not toks:
         return np.zeros(len(texts))
     # IDF weighting: common words count little, distinctive ones count
-    lowered = [t.lower() for t in texts]
-    n = len(texts)
     boost = np.zeros(n, dtype=np.float32)
     for w in set(toks):
         df = sum(1 for t in lowered if w in t) or 1
@@ -312,11 +322,12 @@ def rerank(con, text, order, texts):
     if not url or len(order) < 2:
         return order
     topn = int(_cfg.get("rerank", {}).get("top", 20))
+    max_chars = int(_cfg.get("rerank", {}).get("max_chars", 600))
     cand = order[:topn]
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/rerank",
-            json.dumps({"query": text, "documents": [texts[i] for i in cand]}).encode(),
+            json.dumps({"query": text, "documents": [texts[i][:max_chars] for i in cand]}).encode(),
             {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             res = json.load(r)["results"]
@@ -510,6 +521,71 @@ def audit(con):
     sys.exit(1 if misses else 0)
 
 
+def _llm(prompt, max_tokens=200):
+    """Query-generation backend: [eval] url/model in config (default
+    127.0.0.1:8081 lfm3 — a 1.7B reasoning model is enough to paraphrase)."""
+    sec = _cfg.get("eval", {})
+    url = sec.get("url", "http://127.0.0.1:8081").rstrip("/")
+    model = sec.get("model", "lfm3")
+    req = urllib.request.Request(
+        url + "/v1/chat/completions",
+        json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens, "temperature": 0.7}).encode(),
+        {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)["choices"][0]["message"]["content"]
+
+
+def eval_gen(con, limit=0):
+    """P2: synthetic QA — for each (or N sampled) note, generate 2 natural
+    queries (nickname-style + literal-style, no verbatim title reuse; arXiv
+    2609.38473 protocol) -> qa_gen.json. Synthetic benchmarks reliably RANK
+    retriever variants (arXiv 2508.11758) — exactly what the audit needs."""
+    out = []
+    files = [p for p in walk() if rel_of(p) not in SKIP_FILES]
+    if limit:
+        files = files[::max(1, len(files) // limit)]
+    print(f"generating queries for {len(files)} files (this needs the LLM endpoint)...")
+    for i, p in enumerate(files):
+        head = "\n".join(p.read_text(errors="replace").split("\n")[:15])
+        try:
+            txt = _llm(
+                "You generate test queries for a personal-notes search engine. "
+                "Given a note's start, write 2 search queries the note's OWNER would type: "
+                "one vague/nickname-style, one literal-style. NEVER reuse words from the title verbatim. "
+                "Reply with ONLY the two queries, one per line.\n\n" + head, max_tokens=400)
+            qs = [x.strip("-*.0123456789. ") for x in txt.strip().split("\n") if x.strip()][:2]
+        except Exception as e:
+            print(f"  skip {rel_of(p)}: {e}")
+            continue
+        for q in qs:
+            if len(q.split()) >= 2:
+                out.append([q, rel_of(p)])
+        if (i + 1) % 10 == 0:
+            print(f"  {i + 1}/{len(files)} files, {len(out)} queries")
+    gen_file = Path(_cfg.get("audit", {}).get("qa_gen_file", str(CFG_PATH.parent / "qa_gen.json")))
+    gen_file.write_text(json.dumps({"pairs": out}, ensure_ascii=False, indent=1))
+    print(f"wrote {len(out)} synthetic pairs -> {gen_file}")
+
+
+def eval_run(con, qa_file=None):
+    """Recall@3 + MRR over a synthetic (or any) pairs file. Diagnostic, not a gate."""
+    f = Path(qa_file or _cfg.get("audit", {}).get("qa_gen_file", str(CFG_PATH.parent / "qa_gen.json")))
+    if not f.exists():
+        sys.exit(f"no {f} — run eval-gen first")
+    pairs = json.loads(f.read_text()).get("pairs", [])
+    recall = mrr = 0.0
+    for qtext, expect in pairs:
+        top, paths = query(con, qtext, k=10)
+        ranked = [paths[i] for i in top]
+        for rank_i, p in enumerate(ranked[:3]):
+            if p.startswith(expect) or p == expect:
+                recall += 1
+                mrr += 1.0 / (rank_i + 1)
+                break
+    print(f"eval {f.name}: Recall@3 {recall / len(pairs):.3f}  MRR {mrr / len(pairs):.3f}  ({len(pairs)} pairs)")
+
+
 def mine_aliases(con, min_folder_df=2, max_corpus_df=3, top=5):
     """Alias mining: tokens distinctive to one folder (frequent inside, rare
     outside) are likely the user's nicknames for that project. Candidate list
@@ -588,6 +664,10 @@ def main():
         unlearn(con, " ".join(a[1:-1]).strip('"'), a[-1])
     elif cmd == "review":
         review(con, " ".join(a[1:]))
+    elif cmd == "eval-gen":
+        eval_gen(con, int(a[1]) if len(a) > 1 else 0)
+    elif cmd == "eval":
+        eval_run(con, a[1] if len(a) > 1 else None)
     elif cmd == "aliases":
         mine_aliases(con)
     elif cmd == "audit":
