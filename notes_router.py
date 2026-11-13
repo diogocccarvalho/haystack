@@ -305,25 +305,41 @@ def rank(con, text, k=5):
         df = sum(1 for t in lowered if w in t)
         if 0 < df <= 3:
             scores += np.array([0.03 if w in t else 0.0 for t in lowered], dtype=np.float32)
-    scores += learn_lookup(con, text, paths, q)  # additive post-fusion
+    lboost = learn_lookup(con, text, paths, q)
+    scores += lboost  # additive post-fusion
+    # INDEX.md files are pointer hubs; the note they point to is the content.
+    # Small demotion (NOT removal) so hub files stop outranking their targets.
+    for i, p in enumerate(paths):
+        if p.endswith("/INDEX.md") or p == "INDEX.md":
+            scores[i] *= 0.92
     order = list(np.argsort(-scores))
-    order = rerank(con, text, order, texts)
+    # teacher beats model: user-taught paths survive the cross-encoder's reordering
+    # (pinned must be score-ordered or the "best" correction is a random chunk)
+    pinned = sorted((i for i in range(len(paths)) if lboost[i] > 0), key=lambda i: -scores[i])
+    order = rerank(con, text, order, texts, pinned=pinned, paths_rel=paths)
     top = order[:k]
     return top, paths, heads, texts, scores
 
 
-def rerank(con, text, order, texts):
+def rerank(con, text, order, texts, pinned=(), paths_rel=()):
     """Cross-encoder rerank of the fused top (T2-RAGBench: Recall@5
     0.695 -> 0.816). Optional [rerank] url/model/top in config; the reranker
-    only REORDERS (fusion scores stay the reported scores). Any failure falls
-    back to the fused order — retrieval must never hard-depend on a second
-    server being up."""
+    only REORDERS (fusion scores stay the reported scores), and learned
+    paths are pinned ahead of it — user corrections outrank any model. Any
+    failure falls back to the fused order — retrieval must never hard-depend
+    on a second server being up."""
     url = _cfg.get("rerank", {}).get("url", "")
     if not url or len(order) < 2:
         return order
     topn = int(_cfg.get("rerank", {}).get("top", 20))
     max_chars = int(_cfg.get("rerank", {}).get("max_chars", 600))
-    cand = order[:topn]
+    pinned = [i for i in pinned if i in order[:topn]]
+    order = [i for i in order if i not in pinned]
+    # hub files (INDEX) mention everything, so the cross-encoder ranks them
+    # highly on name-recognition alone — excluded from candidates (R5: the
+    # content file they point to must be the answer)
+    cand = [i for i in order[:topn * 2]
+            if not paths_rel[i].endswith("INDEX.md") or paths_rel[i].count("/") == 0][:topn] if paths_rel else order[:topn]
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/rerank",
@@ -331,12 +347,12 @@ def rerank(con, text, order, texts):
             {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             res = json.load(r)["results"]
-    except Exception as e:  # degraded mode: fused order only
+    except Exception as e:  # degraded mode: fused order, but pins survive (R2)
         log_edit("rerank-fallback", str(e)[:80])
-        return order
+        return pinned + [i for i in order if i not in pinned]
     ranked = [cand[r["index"]] for r in res if r["index"] < len(cand)]
     tail = [i for i in order if i not in cand]
-    return ranked + tail
+    return pinned + ranked + tail  # pinned = learned corrections, always first
 
 
 def query(con, text, k=5):
@@ -530,7 +546,10 @@ def _llm(prompt, max_tokens=200):
     req = urllib.request.Request(
         url + "/v1/chat/completions",
         json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": max_tokens, "temperature": 0.7}).encode(),
+                    "max_tokens": max_tokens, "temperature": 0.7,
+                    # reasoning models burn the whole budget thinking; eval-gen
+                    # wants the answer, not the chain of thought
+                    "chat_template_kwargs": {"enable_thinking": False}}).encode(),
         {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.load(r)["choices"][0]["message"]["content"]
@@ -553,7 +572,7 @@ def eval_gen(con, limit=0):
                 "You generate test queries for a personal-notes search engine. "
                 "Given a note's start, write 2 search queries the note's OWNER would type: "
                 "one vague/nickname-style, one literal-style. NEVER reuse words from the title verbatim. "
-                "Reply with ONLY the two queries, one per line.\n\n" + head, max_tokens=400)
+                "Reply with ONLY the two queries, one per line.\n\n" + head, max_tokens=1024)
             qs = [x.strip("-*.0123456789. ") for x in txt.strip().split("\n") if x.strip()][:2]
         except Exception as e:
             print(f"  skip {rel_of(p)}: {e}")
