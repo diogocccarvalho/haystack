@@ -19,7 +19,8 @@ jobs:
           echo "llama.cpp $NT"
           curl -fL -o ll.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/${NT}/llama-${NT}-bin-ubuntu-x64.tar.gz"
           tar xzf ll.tar.gz
-          sudo find . -name llama-server -exec mv {} /usr/local/bin/ \;
+          sudo mv llama-*/ /opt/llama-nightly
+          echo "/opt/llama-nightly" >> $GITHUB_PATH
           llama-server --version
       - name: download bge-small model
         run: |
