@@ -63,9 +63,26 @@ keep bge-small as the zero-dependency GGUF default, document granite-97m via
 Ollama/ONNX endpoint for multilingual users, and re-audit when swapping.
 Effort: docs + one benchmark run when switching.
 
-**P4 — Learned per-user term statistics.** Replace hardcoded English STOP
-with corpus-derived weights (current lexical_boost already uses corpus IDF;
-STOP remains the weak part). Low value until non-English users exist.
+**P4 — Learned per-user term statistics.** ADOPTED v0.7: corpus-IDF stopwording
+(words in >50% of the corpus are dropped, any language) replaces the hardcoded
+English STOP once n>=50 chunks. Audit 8/8 + sim 48/48 after the change.
+
+## Runtime profiling (2026-11-13, Diogo's rule: >1s ops must be optimized or researched)
+Measured (107 files, 1476 chunks, 6 learned entries): embed 1 query 39ms,
+lexical_boost 55ms, learn_lookup embed 61ms, alias mining 14ms, reindex
+incremental ~0.2s. The ONLY >1s operation was the cross-encoder rerank HTTP
+call: 1457ms for 20 docs x 1000 chars (CPU, 4 threads). Optimizations applied:
+- doc text capped at 600 chars for the reranker (config [rerank] max_chars):
+  1457 -> 977ms. Rerankers judge relevance from the lead; no QA regression.
+- [rerank] top=20 -> top=10 documented as the interactive-speed knob: ~456ms.
+Research note: MiniLM-L6 (6 layers, ~2x faster, same accuracy class per
+MO7YW4NG eval tables: LitSearch R@5 0.4426 fp32) has NO usable GGUF today —
+cstr's conversion lacks token-type metadata ("bert model needs to define
+token type count" on llama.cpp 0.8.0), sinjab's "L6" repo actually contains
+an L12 model, everything else is bi-encoders (wrong class for rerank).
+Converting locally needs torch (~2GB) — not worth it for 977ms -> ~500ms.
+Revisit when a vetted L6 cross-encoder GGUF exists. Remaining honest latency
+statement: ~1.0-1.4s per ranked query with rerank on; ~0.15s with rerank off.
 
 **P5 — Time-aware recall** (Reglos: time/place/recency routes fused by RRF).
 Only relevant if the vault accumulates time-sensitive notes (open-loops

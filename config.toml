@@ -28,4 +28,5 @@ qa_file = "~/.config/notes-router/qa.json"
 [rerank]
 # optional cross-encoder rerank (llama-server --reranking on a reranker GGUF)
 # url = "http://127.0.0.1:8084"
-# top = 20
+# top = 20          # 10 -> ~450ms/call (interactive), 20 -> ~1s (max quality)
+# max_chars = 600    # reranker input cap (latency lever)
