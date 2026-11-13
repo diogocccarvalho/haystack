@@ -84,6 +84,23 @@ Converting locally needs torch (~2GB) — not worth it for 977ms -> ~500ms.
 Revisit when a vetted L6 cross-encoder GGUF exists. Remaining honest latency
 statement: ~1.0-1.4s per ranked query with rerank on; ~0.15s with rerank off.
 
+**P1 addendum (2026-11-13): L6 g7c tested and REJECTED.** cstr's repo now
+ships corrected `-g7c` files (pooler folded into dense→tanh→out_proj,
+2026-08-05) but they still lack `tokenizer.ggml.token_type_count` and use
+HF-style tensor names. Patched by hand with gguf-py (add token_type_count=2;
+rename classifier.dense.*→cls.*, classifier.out_proj.*→cls.output.*; patch
+script outcome recorded here so it isn't re-derived). Serves fine on
+llama.cpp --reranking, wide score range (±11) as intended. A/B (same index,
+same gates):
+- Personal vault: L12 Recall@3 1.000 / MRR 0.926; L6 0.838 / 0.708.
+- Foreign (llama.cpp docs): L12 1.000 / 0.970; L6 1.000 / 0.869.
+- Latency (20 docs x 600 chars, 4 threads CPU): L12 ~830ms, L6 ~425ms.
+Conclusion: L6 is exactly 2x faster and materially worse; on the corpus the
+tool actually serves it drops 16pp of Recall@3. Keep ms-marco-MiniLM-L12-v2
+Q8_0. Next lever if latency ever matters: [rerank] top=10 (~450ms at L12
+speed). The MO7YW4NG "same accuracy class" claim does not transfer to
+long-prose note retrieval.
+
 **P5 — Time-aware recall** (Reglos: time/place/recency routes fused by RRF).
 Only relevant if the vault accumulates time-sensitive notes (open-loops
 already acts as the recency layer). Defer.

@@ -127,7 +127,8 @@ implications are the design.
 - Fix status: R1 ✓ (pins), R2 ✓ (fallback keeps pins), R4 ✓ (learned.json),
   R5 ✓ (INDEX excluded from rerank), R6 ✓ (family-level eval truth),
   R7 ✓ (enable_thinking=False; agent-as-generator per Diogo), R3 partial
-  (cap 600 chars; L6 GGUF unavailable),
+  (cap 600 chars; L6 GGUF tested 2026-11-13: 2x faster, -16pp Recall@3 on
+  personal vault → REJECTED, see RESEARCH.md P1 addendum; knob is top=10),
   R8 removed by Diogo's call (2026-11-13): agent-in-the-loop is by design,
   not a shortcoming,
   R9 mostly closed (foreign-vault quality VALIDATED 1.000/0.970; residual:
