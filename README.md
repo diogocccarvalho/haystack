@@ -13,10 +13,12 @@ So I built Haystack for it — and had the agent build most of it with me.
 Static search indexes documents; Haystack also indexes *you*: every time a
 query misses and you correct it, the correction becomes a permanent,
 self-testing rule. All local, zero cloud, one 35 MB embedding model.
+(Yes, the name is just "needle in a haystack". It's a notes tool, not a
+startup pivot.)
 
 | | Without haystack | With haystack |
 |---|---|---|
-| "that project about the batches" | agent greps the vault, guesses, opens 2–5 files, reads thousands of tokens of the wrong notes | one query → the right path + a 200-char snippet, ~10 ms |
+| "that project about the batches" | agent greps the vault, guesses, opens 2–5 files, reads thousands of tokens of the wrong notes, and by then has forgotten why it opened them | one query → the right path + a 200-char snippet, ~10 ms |
 | Same question tomorrow | the same exploration again | pinned by yesterday's correction — the miss can't happen twice |
 | Did retrieval get worse? | nobody knows | `audit` runs your corrections as regression tests; any miss fails CI-style |
 | Wrong answer from the agent | you fix the note, the pattern repeats | you say "that's not what I want" → `learn` → permanent + tested |
@@ -40,7 +42,8 @@ caught. `audit` 8/8 + 7/7 learned corrections at time of writing.
   beats the model).
 - **Self-audit** — every learned correction automatically becomes a QA
   regression pair. `audit` = reindex + run all pairs, exit 1 on any miss.
-  Your corrections ARE the test suite; no manual test authoring.
+  Your corrections ARE the test suite — the only CI that runs when you insult
+  it. No manual test authoring.
 - **Deterministic editing** — `append` / `frontmatter` / `new-note` with
   `--dry-run` everywhere, INDEX.md maintenance, edit log.
 
@@ -91,8 +94,8 @@ db — e.g. llama.cpp questions answered from `~/src/llama.cpp/docs` directly.
 ## Design notes
 
 - Vault-agnostic: your layout, your conventions, one `config.toml`. No schema.
-- sqlite + numpy flat index. Edit log + optional INDEX.md maintenance on
-  every write.
+- sqlite + numpy flat index (it's a notes vault, not a datacenter). Edit log
+  + optional INDEX.md maintenance on every write.
 - Model-agnostic by contract; every adopted change measured against the QA
   gates (one variable at a time), rejected changes documented with numbers:
   [docs/RESEARCH.md](docs/RESEARCH.md).
