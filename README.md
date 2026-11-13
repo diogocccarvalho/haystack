@@ -1,6 +1,7 @@
 # Haystack
 
 **A semantic router for your markdown vault — built for AI agents, tuned by your own corrections.**
+[![ci](https://github.com/diogocccarvalho/haystack/actions/workflows/ci.yml/badge.svg)](https://github.com/diogocccarvalho/haystack/actions/workflows/ci.yml)
 
 I run an AI agent (Hermes) as the operating layer over my life: work projects,
 a second brain, research dumps — ~150 markdown notes. The model was cheap
