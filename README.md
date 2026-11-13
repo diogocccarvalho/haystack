@@ -36,6 +36,13 @@ zero cloud, one 35 MB embedding model.
 - Everything on your disk. `learn` tables never leave your machine (they can
   contain note names — do not share them raw).
 
+## Multi-corpus ("docs-router")
+
+Same engine, second index for external technical docs (llama.cpp, kitty, any
+docs that outgrow context). Copy `docs-router.toml.example`, set `[vault]` to
+the docs folder and a fresh `[index]` db, then query with NR_CONFIG pointing
+at your copy — e.g. llama.cpp questions hit `~/src/llama.cpp/docs` directly.
+
 ## Quickstart
 
 ```bash

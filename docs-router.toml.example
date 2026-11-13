@@ -1,0 +1,26 @@
+# docs-router: notes-router over external technical docs (out-of-vault corpora).
+# Corpus: llama.cpp docs, indexed live from the repo (not a copy).
+# Reindex after pulling the repo: NR_CONFIG=docs-router.toml notes_router.py reindex
+# NOTE: learned.json is SHARED with the main config dir — corrections here
+# teach the same store the personal vault uses (on purpose: same brain).
+
+[vault]
+path = "~/src/llama.cpp/docs"
+index_convention = "none"
+exclude_dirs = []
+exclude_files = []
+external = []
+
+[index]
+db = "~/.cache/notes-router-docs.sqlite"
+
+[embeddings]
+url = "http://127.0.0.1:8082/v1/embeddings"
+model = ""
+
+[audit]
+qa_file = "~/.config/notes-router/qa-docs.json"
+
+[rerank]
+url = "http://127.0.0.1:8084"
+top = 20
