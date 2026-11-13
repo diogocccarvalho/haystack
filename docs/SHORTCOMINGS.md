@@ -103,7 +103,33 @@ implications are the design.
 - bge-small embedder is 2021-generation (see RESEARCH.md P3) — swap gated on
   multilingual needs and GGUF availability.
 
+## R10. Foreign corpus killed the reindexer (found 2026-11-13, foreign-vault test)
+- What: llama.cpp's docs/ (55 files, URL/code-dense markdown) — one chunk
+  tokenized denser than the embedder's 512-token context; llama-server
+  returned 500 for the WHOLE batch and reindex died at file 1 of 55. The
+  1000-char cap was tuned on prose (Diogo's vault) and silently assumed
+  tokens ~= chars/4.
+- Plugin patch: embed_resilient — split-on-failure down to single chunks;
+  over-context chunks are skipped + logged, never fatal.
+- Architectural implication: any "context window" assumption in the
+  from-scratch design must be enforced at the boundary (token-count check
+  before ingest), not tuned per-corpus by character heuristics. Length is a
+  property of the TOKENIZER, not the text; only the tokenizer can validate it.
+
+## Pass results (2026-11-13 03:15, post-fix)
+- Personal gates: audit 8/8, eval 68/68 Recall@3 (MRR 0.926), sim 48/48.
+- Foreign-vault (llama.cpp docs/): reindex 55/55 with resilient embeds;
+  spot-checks: build-with-cuda→build.md ✓, android→android.md ✓;
+  2 other spot-checks had NO true target in the corpus (unfair queries).
+  Honest status: robustness validated; retrieval-quality generalization
+  still unproven (needs a corpus with known-answer questions).
+
 ## Running log (append on every new failure, date + entry)
 - 2026-11-13: R1, R2, R4 found live; R3, R5, R6 found in the 68-pair eval
   (63/68 → 5 misses diagnosed to root causes); R7 found building eval-gen;
-  R8 is standing state.
+  R8 is standing state; R10 found in the foreign-vault robustness test.
+- Fix status: R1 ✓ (pins), R2 ✓ (fallback keeps pins), R4 ✓ (learned.json),
+  R5 ✓ (INDEX excluded from rerank), R6 ✓ (family-level eval truth),
+  R7 ✓ (enable_thinking=False; agent-as-generator per Diogo), R3 partial
+  (cap 600 chars; L6 GGUF unavailable), R8 standing (agent-in-the-loop),
+  R9 open (foreign-vault quality), R10 ✓ (embed_resilient).
