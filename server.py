@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""notes-router HTTP API — same ops as the CLI, for agents and integrations.
+"""haystack HTTP API — same ops as the CLI, for agents and integrations.
 
 Stdlib only. Endpoints:
   GET  /health                 -> {"ok": true, "chunks": N}
@@ -23,7 +23,7 @@ import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import notes_router as nr
+import haystack as nr
 
 CFG = __import__("tomllib").load(open(nr.CFG_PATH, "rb"))
 API_TOKEN = (CFG.get("api") or {}).get("token", "")

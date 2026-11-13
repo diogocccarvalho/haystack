@@ -1,5 +1,5 @@
-# notes-router configuration
-# Copy to ~/.config/notes-router/config.toml (or set NR_CONFIG).
+# Haystack configuration
+# Copy to ~/.config/haystack/config.toml (or set NR_CONFIG). Legacy installs using ~/.config/notes-router still work.
 
 [vault]
 path = "~/notes"                      # your markdown vault root
@@ -12,7 +12,7 @@ external = []
 # external = ["~/.local/share/notes/open-loops.md"]
 
 [index]
-db = "~/.cache/notes-router/index.sqlite"
+db = "~/.cache/haystack/index.sqlite"
 
 [embeddings]
 # Any OpenAI-compatible /v1/embeddings endpoint works:
@@ -26,7 +26,7 @@ model = ""                            # some endpoints require a model name (e.g
 [audit]
 # Ground-truth QA pairs for `notes-router audit`. Start empty;
 # seed it with real queries via `learn` / `review`.
-qa_file = "~/.config/notes-router/qa.json"
+qa_file = "~/.config/haystack/qa.json"
 
 [rerank]
 # optional cross-encoder rerank (llama-server --reranking on a reranker GGUF)

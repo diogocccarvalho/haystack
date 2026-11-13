@@ -96,6 +96,6 @@ else
   echo "    $LLAMA_SERVE -m $MODEL_DIR/$MODEL_NAME --embeddings --pooling cls -c 512 -ub 512 --port $PORT --host 127.0.0.1"
 fi
 cat <<EOF
-  index:   NR_CONFIG=$CONFIG_DIR/config.toml python3 $(dirname "$0")/notes_router.py reindex
-  query:   NR_CONFIG=$CONFIG_DIR/config.toml python3 $(dirname "$0")/notes_router.py query "anything"
+  index:   NR_CONFIG=$CONFIG_DIR/config.toml python3 $(dirname "$0")/haystack.py reindex
+  query:   NR_CONFIG=$CONFIG_DIR/config.toml python3 $(dirname "$0")/haystack.py query "anything"
 EOF

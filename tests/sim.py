@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simulated-use bug hunt for notes-router.
+"""Simulated-use bug hunt for notes-router → haystack (2026-11-13).
 
 Builds a fresh adversarial vault in a temp dir, runs the CLI + API the way an
 agent would (including hostile inputs), prints PASS/FAIL per scenario.
@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SCRIPT = REPO / "notes_router.py"
+SCRIPT = REPO / "haystack.py"
 EMBD = "http://127.0.0.1:8082/v1/embeddings"
 
 results = []

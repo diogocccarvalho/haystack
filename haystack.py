@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""notes-router — semantic router + deterministic editor for a local markdown vault.
+"""haystack — semantic router + deterministic editor for a local markdown vault.
 
 Local, zero-API: points at ANY OpenAI-compatible /v1/embeddings endpoint
 (llama.cpp, Ollama, LM Studio, remote). Learns from your corrections.
 
 Usage:
-  notes-router.py reindex                  # incremental reindex
-  notes-router.py query <text> [-k N]      # top-N: path<TAB>heading<TAB>score<TAB>snippet
-  notes-router.py find-file <words>        # best path only
-  notes-router.py append <file> <heading> <text> [--dry-run]
-  notes-router.py frontmatter <file> k=v [--dry-run]
-  notes-router.py new-note <dir> <name> ["Title"] [--dry-run]
-  notes-router.py learn "<query>" <path>   # teach a correction
-  notes-router.py review <text>            # interactive feedback loop
-  notes-router.py aliases                  # mine nickname candidates per folder
-  notes-router.py audit                    # reindex + run QA pairs (exit 1 on miss)
+  haystack.py reindex                  # incremental reindex
+  haystack.py query <text> [-k N]      # top-N: path<TAB>heading<TAB>score<TAB>snippet
+  haystack.py find-file <words>        # best path only
+  haystack.py append <file> <heading> <text> [--dry-run]
+  haystack.py frontmatter <file> k=v [--dry-run]
+  haystack.py new-note <dir> <name> ["Title"] [--dry-run]
+  haystack.py learn "<query>" <path>   # teach a correction
+  haystack.py review <text>            # interactive feedback loop
+  haystack.py aliases                  # mine nickname candidates per folder
+  haystack.py audit                    # reindex + run QA pairs (exit 1 on miss)
 
 Config: ~/.config/notes-router/config.toml (override with NR_CONFIG).
 See config.toml in this repo for every option.
@@ -544,7 +544,7 @@ def unlearn(con, qtext, path):
 
 def load_qa():
     if not QA_FILE.exists():
-        sys.exit(f"no QA pairs yet ({QA_FILE}). Seed them: notes-router.py learn "
+        sys.exit(f"no QA pairs yet ({QA_FILE}). Seed them: haystack.py learn "
                  "\"<query>\" <path>, or copy a qa.json template into that file.")
     try:
         data = json.loads(QA_FILE.read_text())
