@@ -142,6 +142,8 @@ def walk():
         if p.exists():
             yield p
     for p in sorted(VAULT.rglob("*.md")):
+        if not p.is_file():  # a directory named "x.md" would crash chunks_of
+            continue
         rel = str(p.relative_to(VAULT))
         if rel in SKIP_FILES or any(part in rel for part in SKIP_PARTS):
             continue
@@ -175,10 +177,11 @@ def reindex(con):
         cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
         cur.execute("DELETE FROM files WHERE path=?", (rel,))
         cs = chunks_of(p)
-        vecs = embed([c[1] for c in cs])
-        for (head, txt), v in zip(cs, vecs):
-            cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
-                        (rel, head, h, v.astype(np.float32).tobytes(), txt))
+        if cs:  # empty/near-empty files: no chunks to embed (embed([]) 400s)
+            vecs = embed([c[1] for c in cs])
+            for (head, txt), v in zip(cs, vecs):
+                cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
+                            (rel, head, h, v.astype(np.float32).tobytes(), txt))
         cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
         n_new += 1
     for rel in set(db_files) - seen:
@@ -228,7 +231,10 @@ def load_all(con):
     rows = list(con.execute("SELECT path, heading, vec, text FROM chunks"))
     paths = [r[0] for r in rows]
     heads = [r[1] for r in rows]
-    mat = np.vstack([np.frombuffer(r[2], dtype=np.float32) for r in rows])
+    if rows:
+        mat = np.vstack([np.frombuffer(r[2], dtype=np.float32) for r in rows])
+    else:
+        mat = np.zeros((0, 384), dtype=np.float32)
     texts = [r[3] for r in rows]
     return paths, heads, mat, texts
 
@@ -238,6 +244,8 @@ def rank(con, text, k=5):
     ranking and the lexical ranking, plus additive learned-correction boost.
     Rank-based fusion avoids the cosine-vs-BM25 scale-calibration problem."""
     paths, heads, mat, texts = load_all(con)
+    if not paths:
+        return np.array([], dtype=int), paths, heads, texts, np.array([])
     q = embed([text])[0]
     n = len(paths)
     dense = mat @ q
@@ -287,8 +295,8 @@ def index_one(con, p):
     cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
     cur.execute("DELETE FROM files WHERE path=?", (rel,))
     cs = chunks_of(p)
-    vecs = embed([c[1] for c in cs])
     h = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+    vecs = embed([c[1] for c in cs]) if cs else []
     for (head, txt), v in zip(cs, vecs):
         cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
                     (rel, head, h, v.astype(np.float32).tobytes(), txt))
@@ -301,6 +309,8 @@ def update_index(fpath):
     if INDEX_CONV != "list" or rel_of(fpath).startswith("external/"):
         return
     idx = VAULT / "INDEX.md"
+    if not idx.exists():
+        idx.write_text("# INDEX\n")
     rel = str(fpath.relative_to(VAULT))
     t = idx.read_text(errors="replace")
     if rel in t:
@@ -362,6 +372,8 @@ def set_frontmatter(file_ref, kv, dry=False):
 
 
 def new_note(dirrel, name, title=None, dry=False):
+    if "/" in name or "\\" in name or ".." in name or not name.strip():
+        sys.exit(f"invalid note name: {name!r}")
     d = VAULT / dirrel
     p = d / f"{name}.md"
     if dry:
@@ -378,8 +390,8 @@ def new_note(dirrel, name, title=None, dry=False):
 
 
 def learn(con, qtext, path, commit=True):
-    if not real_path(path).exists():
-        sys.exit(f"{path}: not in vault")
+    if not real_path(path).is_file():
+        sys.exit(f"{path}: not a vault file")
     cur = con.cursor()
     row = cur.execute("SELECT qhash, hits FROM learned WHERE qtext=? AND path=?",
                       (qtext, path)).fetchone()
@@ -399,7 +411,10 @@ def load_qa():
     if not QA_FILE.exists():
         sys.exit(f"no QA pairs yet ({QA_FILE}). Seed them: notes-router.py learn "
                  "\"<query>\" <path>, or copy a qa.json template into that file.")
-    data = json.loads(QA_FILE.read_text())
+    try:
+        data = json.loads(QA_FILE.read_text())
+    except json.JSONDecodeError as e:
+        sys.exit(f"{QA_FILE}: invalid JSON ({e})")
     return data.get("pairs", [])
 
 
