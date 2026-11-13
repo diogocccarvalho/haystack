@@ -1,10 +1,10 @@
 # SHORTCOMINGS.md — failure catalog of the plugins
 
-Purpose (the author, 2026-11-13): every shortcoming found while dogfooding the
-plugins (notes-router now, crystallization later) becomes a spec line for the
-from-scratch architecture. Each entry: what fails, why, the plugin patch, and
-the architectural implication. The plugin patches are mortised wood; the
-implications are the design.
+Purpose (the author, 2026-11-13): catalog of failures found while dogfooding
+the tool. Each entry: what fails, why, and the plugin patch. The design
+implications distilled from these failures moved to the author's private
+crystallization repo (docs/design.md) — haystack keeps the observations, the
+from-scratch architecture gets the rules.
 
 ## R1. Reranker overrode user corrections (found live, 2026-11-13)
 - What: query "deploying webmethods packages how" — the taught file dropped
@@ -12,51 +12,35 @@ implications are the design.
   boost fed the fusion scores, but rerank then ignored scores.
 - Plugin patch: pinned paths — learned corrections are placed ahead of
   rerank's order ("teacher beats model").
-- Architectural implication: user-acquired constraints must be a HARD layer,
-  not a soft score any learned component can override. In a from-scratch
-  design, "what the user taught" is an invariant block (non-learned), not a
-  prior. Selection order: invariant > learned-by-use > model opinion.
+- Design rule: D1 (crystallization repo, docs/design.md).
 
 ## R2. Pinned corrections vanish when rerank is down (found while fixing R1)
 - What: the degraded-mode fallback (`return order`) silently dropped the
   pinning — the exact same query that worked with rerank up failed with it
   down. Two systems, one expectation, different results.
 - Plugin patch: fallback returns pinned + order.
-- Architectural implication: graceful degradation must degrade the CAPABILITY
-  (skip reordering), never the CONSTRAINTS (ordering rules). Layers must be
-  composable in any availability state. A "just do" step (crystallized op)
-  can't depend on which optional components happen to be alive.
+- Design rule: D2 (crystallization repo, docs/design.md).
 
 ## R3. Cross-encoder latency ~1s (the only >1s op in the whole product)
 - What: 20 docs x 600 chars through 33M params on CPU = ~1s; everything else
   in the pipeline is 10-60ms. The smartest component is also 20x the cost.
 - Plugin patch: input cap 600 chars, optional top=10 (~450ms). L6 variant
   unusable (no valid GGUF; see RESEARCH.md).
-- Architectural implication: relevance judgment at query time is the
-  bottleneck of retrieval-augmented everything. The endgame (no encoders,
-  crystallized selection) must make "is this context good" O(1)-ish or make
-  the judgment incremental (judge once, remember the verdict), not re-judge
-  every candidate on every query.
+- Design rule: D3 (crystallization repo, docs/design.md).
 
 ## R4. Learned memory lived inside the cache (fixed 2026-11-13, the costly one)
 - What: an index rebuild deleted every learned correction — the system's
   improvement state was a casualty of its own maintenance. Found because a
   QA pair regressed right after a rebuild.
 - Plugin patch: learned.json, append-only, outside the index DB.
-- Architectural implication: crystallized knowledge (verified ops, taught
-  mappings) must be an append-only substrate that all derived structures
-  (indexes, caches, weights) are REBUILDABLE FROM. Cache may die; crystal
-  may not. This is the storage law for the from-scratch architecture.
+- Design rule: D4 (crystallization repo, docs/design.md).
 
 ## R5. Hub files outrank the content they point to
 - What: "the incremental game idea" returned design/INDEX.md (a table of
   contents) instead of StreetFighterIncremental.md (the note). INDEX files
   mention everything, so lexical + title boosts favor them.
 - Plugin patch: 0.92 demotion on /INDEX.md paths.
-- Architectural implication: navigational artifacts and content artifacts
-  need different retrieval classes. A from-scratch architecture should index
-  the graph (structure) separately from the text (content) and rank content
-  first by default — "pointers serve, never replace."
+- Design rule: D5 (crystallization repo, docs/design.md).
 
 ## R6. Sibling ambiguity — multiple valid answers, one ground truth
 - What: distro family has 6 sibling files; "hopping to another distro" can
@@ -64,10 +48,7 @@ implications are the design.
   behavior.
 - Plugin patch: eval expectations at folder/family level where the user's
   intent really is family-level.
-- Architectural implication: correctness of retrieval is often set-valued,
-  not scalar. An architecture whose learning signal can't represent "this
-  family, any member" will chase noise. Learned corrections should record
-  granularity (file / folder / family), not just a path.
+- Design rule: D6 (crystallization repo, docs/design.md).
 
 ## R7. Small local models burn their budget on reasoning before answering
 - What: eval-gen with LFM3-1.7B produced empty content — 4271 chars of
@@ -76,11 +57,8 @@ implications are the design.
   audit small-model failures later.
 - Plugin patch: enable_thinking=False works; agent-generated eval set is the
   dev standard (qa_gen.json, 68 pairs).
-- Architectural implication (crystallization): "think then do" is the wrong
-  shape for bounded tasks — the thinking cost exceeds the task. Crystallized
-  steps should have a think-budget of ZERO by default and earn thinking only
-  when a validator says the cheap path failed. (This is the overthinking
-  paper observation from the crystallization README, met in production.)
+- Design rule: D7 (crystallization repo, docs/design.md) — the overthinking
+  paper observation, met in production.
 
 ## R9. Known-but-unfixed (tracked, not hidden)
 - ~~Chunker heuristics tuned on ONE vault (the author's); no evidence they
@@ -108,10 +86,7 @@ implications are the design.
   tokens ~= chars/4.
 - Plugin patch: embed_resilient — split-on-failure down to single chunks;
   over-context chunks are skipped + logged, never fatal.
-- Architectural implication: any "context window" assumption in the
-  from-scratch design must be enforced at the boundary (token-count check
-  before ingest), not tuned per-corpus by character heuristics. Length is a
-  property of the TOKENIZER, not the text; only the tokenizer can validate it.
+- Design rule: D8 (crystallization repo, docs/design.md).
 
 ## Pass results (2026-11-13 03:15, post-fix)
 - Personal gates: audit 8/8, eval 68/68 Recall@3 (MRR 0.926), sim 48/48.
