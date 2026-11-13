@@ -9,6 +9,9 @@ Stdlib only. Endpoints:
   POST /frontmatter {"file","key","value","dry_run":false}
   POST /new-note {"dir","name","title":null,"dry_run":false}
   POST /learn   {"q","path"}
+  POST /review  {"q"}                        -> {"candidates":[{n,path,heading,score,snippet}]}
+  POST /review  {"q","path"}                 -> teach (learn + index log); path may be a
+                                                candidate number from the first call
   POST /reindex {}
 Auth: optional bearer token — set [api] token = "..." in config.toml.
 
@@ -16,6 +19,7 @@ Usage: python3 server.py [--port 8083]
 """
 import json
 import os
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -85,6 +89,31 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/reindex":
                 nr.reindex(con)
                 self._send(200, {"ok": True})
+            elif self.path == "/review":
+                # Two-call teach loop for headless agents:
+                #  {"q"}            -> ranked candidates
+                #  {"q","path"}     -> teach (path = vault path OR candidate n)
+                qtext = str(body.get("q", "")).strip()
+                if not qtext:
+                    self._send(400, {"error": "empty query"}); return
+                if "path" not in body or body["path"] in (None, ""):
+                    top, paths, heads, texts, scores = nr.rank(con, qtext, k=5)
+                    cands = [{"n": n + 1, "path": paths[i], "heading": heads[i],
+                              "score": round(float(scores[i]), 4),
+                              "snippet": re.sub(r"\s+", " ", str(texts[i]))[:140]}
+                             for n, i in enumerate(top)]
+                    self._send(200, {"q": qtext, "candidates": cands,
+                                     "teach": {"path": "<candidate n or vault path>"}})
+                    return
+                p = str(body["path"])
+                if p.isdigit():
+                    top, paths, _, _, _ = nr.rank(con, qtext, k=5)
+                    idx = int(p) - 1
+                    if idx < 0 or idx >= len(top):
+                        self._send(400, {"error": f"candidate {p} out of range (1-{len(top)})"}); return
+                    p = paths[int(top[idx])]
+                nr.learn(con, qtext, p)
+                self._send(200, {"ok": True, "taught": {"q": qtext, "path": p}})
             elif self.path == "/aliases":
                 out = nr.mine_aliases(con)
                 self._send(200, [{"folder": f, "candidates": c} for f, c in out])

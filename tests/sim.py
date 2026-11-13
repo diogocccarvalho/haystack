@@ -225,6 +225,19 @@ qa_file = "{tmp / 'qa.json'}"
         check("api /reindex", st == 200)
         st, body = post("/aliases", {})
         check("api /aliases", st == 200 and isinstance(body, list))
+        # /review: two-call teach loop
+        st, body = post("/review", {"q": "alpha invoice parser thing"})
+        check("api /review candidates", st == 200 and body.get("candidates")
+              and body["candidates"][0]["path"].startswith("proj/alpha"), str(body)[:100])
+        cand_n = body["candidates"][0]["n"] if st == 200 and body.get("candidates") else "1"
+        st, body = post("/review", {"q": "alpha invoice parser thing", "path": str(cand_n)})
+        check("api /review teach by n", st == 200 and body.get("ok"), f"{st} {body}")
+        st, body = post("/review", {"q": "alpha invoice parser thing", "path": "999"})
+        check("api /review bad n -> 400", st == 400 and "out of range" in body.get("error", ""), f"{st} {body}")
+        st, body = post("/review", {"q": "  "})
+        check("api /review empty q -> 400", st == 400)
+        st, body = post("/review", {"q": "teach traversal probe", "path": "../../etc/hostname"})
+        check("api /review traversal blocked", st == 400 and "not a vault path" in body.get("error", ""), f"{st} {body}")
     finally:
         api.terminate()
 

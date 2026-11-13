@@ -64,4 +64,4 @@ Requires Python 3.11+ (stdlib + numpy only).
       user-taught corrections pin ahead of it — the teacher beats the model)
 - [x] Learned per-user term statistics (corpus-IDF stopwording, any language)
 - [x] Alias mining (`aliases` command + /aliases endpoint): distinctive tokens per leaf folder, offered as `learn` candidates — nothing auto-taught
-- [ ] HTTP /review endpoint (interactive accept/teach)
+- [x] HTTP /review endpoint (headless two-call teach loop: list candidates, teach by n or path)
