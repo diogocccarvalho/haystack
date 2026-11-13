@@ -61,6 +61,19 @@ health-checks it; `--systemd` also installs a user unit. Any
 OpenAI-compatible endpoint works instead (Ollama, LM Studio, remote API) —
 point `[embeddings].url` at it. Python 3.11+, stdlib + numpy only.
 
+### Which embedder is best? Measure, don't guess
+
+Encoder quality is corpus-shaped: the same two models swap rankings between
+vaults (docs/RESEARCH.md has both verdicts). `pick-encoder` runs the A/B on
+YOUR notes — generates owner-style queries (or takes `--pairs`), scores each
+candidate endpoint on a throwaway index, prints the table:
+
+```bash
+python3 haystack.py pick-encoder http://127.0.0.1:8082/v1/embeddings \
+  http://127.0.0.1:8086/v1/embeddings     # dry run: table only
+# add --yes to write the winner to config and rebuild the index
+```
+
 ## Measured
 
 All numbers from the repo's own regression sets (docs/RESEARCH.md):

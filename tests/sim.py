@@ -190,6 +190,31 @@ qa_file = "{tmp / 'qa.json'}"
     check("audit passes its own pairs", r.returncode == 0 and "2/2 qa.json" in r.stdout and "learned passed" in r.stdout,
           r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[-150:])
 
+    # --- pick-encoder: dry run measures candidates, --yes with winner==current
+    # leaves config alone (single live endpoint can't exercise a real swap)
+    (tmp / "pick-pairs.json").write_text(json.dumps({"pairs": [
+        ["alpha invoice parser thing", "proj/alpha/main.md"],
+        ["the drone project", "proj/beta/note.md"],
+        ["rocket stuff emoji", "misc/emoji-🚀.md"],
+        ["crlf windows endings", "misc/crlf.md"],
+        ["bom marker note", "misc/bom.md"]]}))
+    before_cfg = cfg.read_text()
+    r = run_cli(cfg, "pick-encoder", EMBD, "--pairs", str(tmp / "pick-pairs.json"))
+    check("pick-encoder dry run scores candidates", r.returncode == 0 and "winner:" in r.stdout
+          and EMBD in r.stdout, (r.stdout + r.stderr)[-200:])
+    check("pick-encoder dry run leaves config", cfg.read_text() == before_cfg)
+    r = run_cli(cfg, "pick-encoder", "http://127.0.0.1:59999/v1/embeddings",
+                "--pairs", str(tmp / "pick-pairs.json"), "--yes")
+    check("pick-encoder dead candidate skipped, current wins, config untouched",
+          r.returncode == 0 and "FAILED" in r.stdout and cfg.read_text() == before_cfg,
+          (r.stdout + r.stderr)[-200:])
+    nocfg = tmp / "nollm.toml"
+    nocfg.write_text(cfg.read_text().replace("8082/v1/embeddings", "8082/v1/embeddings")
+                     + '\n[eval]\nurl = "http://127.0.0.1:59998"\n')
+    r = run_cli(nocfg, "pick-encoder", EMBD)
+    check("pick-encoder missing pairs + no LLM fails cleanly", r.returncode != 0
+          and "Traceback" not in r.stderr, (r.stdout + r.stderr)[-400:])
+
     # deleted file still served from index -> stale path reported
     (vault / "proj/beta/note.md").unlink()
     r = run_cli(cfg, "query", "the drone project", "-k", "1")
