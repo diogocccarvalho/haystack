@@ -98,4 +98,6 @@ fi
 cat <<EOF
   index:   NR_CONFIG=$CONFIG_DIR/config.toml python3 $(dirname "$0")/haystack.py reindex
   query:   NR_CONFIG=$CONFIG_DIR/config.toml python3 $(dirname "$0")/haystack.py query "anything"
+  better fit?  python3 $(dirname "$0")/haystack.py pick-encoder <endpoint-url> ...
+             (A/B embeddings endpoints on YOUR notes; --yes switches config)
 EOF

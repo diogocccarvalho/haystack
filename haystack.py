@@ -15,6 +15,9 @@ Usage:
   haystack.py review <text>            # interactive feedback loop
   haystack.py aliases                  # mine nickname candidates per folder
   haystack.py audit                    # reindex + run QA pairs (exit 1 on miss)
+  haystack.py pick-encoder <url> [--pairs f] [--limit N] [--yes]
+                                       # A/B embeddings endpoints on THIS vault,
+                                       # --yes writes the winner to config + rebuilds
 
 Config: ~/.config/notes-router/config.toml (override with NR_CONFIG).
 See config.toml in this repo for every option.
@@ -26,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import urllib.request
@@ -621,7 +625,7 @@ def _llm(prompt, max_tokens=200):
         return json.load(r)["choices"][0]["message"]["content"]
 
 
-def eval_gen(con, limit=0):
+def eval_gen(con, limit=0, dest=None):
     """P2: synthetic QA — for each (or N sampled) note, generate 2 natural
     queries (nickname-style + literal-style, no verbatim title reuse; arXiv
     2609.38473 protocol) -> qa_gen.json. Synthetic benchmarks reliably RANK
@@ -648,17 +652,13 @@ def eval_gen(con, limit=0):
                 out.append([q, rel_of(p)])
         if (i + 1) % 10 == 0:
             print(f"  {i + 1}/{len(files)} files, {len(out)} queries")
-    gen_file = Path(_cfg.get("audit", {}).get("qa_gen_file", str(CFG_PATH.parent / "qa_gen.json")))
+    gen_file = Path(str(dest) if dest else _cfg.get("audit", {}).get("qa_gen_file", str(CFG_PATH.parent / "qa_gen.json")))
     gen_file.write_text(json.dumps({"pairs": out}, ensure_ascii=False, indent=1))
     print(f"wrote {len(out)} synthetic pairs -> {gen_file}")
 
 
-def eval_run(con, qa_file=None):
-    """Recall@3 + MRR over a synthetic (or any) pairs file. Diagnostic, not a gate."""
-    f = Path(qa_file or _cfg.get("audit", {}).get("qa_gen_file", str(CFG_PATH.parent / "qa_gen.json")))
-    if not f.exists():
-        sys.exit(f"no {f} — run eval-gen first")
-    pairs = json.loads(f.read_text()).get("pairs", [])
+def eval_pairs(con, pairs):
+    """R@3 + MRR for a pairs list. Shared by `eval` and `pick-encoder`."""
     recall = mrr = 0.0
     for qtext, expect in pairs:
         top, paths = query(con, qtext, k=10)
@@ -668,7 +668,93 @@ def eval_run(con, qa_file=None):
                 recall += 1
                 mrr += 1.0 / (rank_i + 1)
                 break
-    print(f"eval {f.name}: Recall@3 {recall / len(pairs):.3f}  MRR {mrr / len(pairs):.3f}  ({len(pairs)} pairs)")
+    n = max(1, len(pairs))
+    return recall / n, mrr / n
+
+
+def eval_run(con, qa_file=None):
+    """Recall@3 + MRR over a synthetic (or any) pairs file. Diagnostic, not a gate."""
+    f = Path(qa_file or _cfg.get("audit", {}).get("qa_gen_file", str(CFG_PATH.parent / "qa_gen.json")))
+    if not f.exists():
+        sys.exit(f"no {f} — run eval-gen first")
+    pairs = json.loads(f.read_text()).get("pairs", [])
+    recall, mrr = eval_pairs(con, pairs)
+    print(f"eval {f.name}: Recall@3 {recall:.3f}  MRR {mrr:.3f}  ({len(pairs)} pairs)")
+
+
+def pick_encoder(args):
+    """A/B encoder candidates on THIS vault: score each on a throwaway DB over
+    synthetic (or --pairs) queries, print the table, --yes swaps config and
+    rebuilds. Encoder choice is corpus-shaped (same models, opposite verdicts
+    on personal vs foreign vaults — RESEARCH.md), so candidates are measured,
+    never predicted from model cards."""
+    urls, pairs_file, limit, yes = [], None, 30, "--yes" in args
+    rest = [x for x in args if x not in ("--yes",)]
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--pairs" and i + 1 < len(rest):
+            pairs_file = rest[i + 1]
+            i += 2
+        elif rest[i] == "--limit" and i + 1 < len(rest):
+            limit = int(rest[i + 1])
+            i += 2
+        else:
+            urls.append(rest[i])
+            i += 1
+    if not urls:
+        sys.exit("pick-encoder: give at least one embeddings url (current first)")
+    # default candidate list: keep current first so ties keep the incumbent
+    if EMBD_URL not in urls:
+        urls = [EMBD_URL] + urls
+    if not (pairs_file and Path(pairs_file).exists()):
+        gen = Path(pairs_file or (Path(tempfile.mkdtemp(prefix="hay-pick-")) / "qa_gen.json"))
+        print(f"no pairs file — generating ({limit} files, needs the LLM endpoint)...")
+        eval_gen(connect(), limit=limit, dest=gen)
+        pairs_file = str(gen)
+    pairs = json.loads(Path(pairs_file).read_text()).get("pairs", [])
+    if len(pairs) < 5:
+        sys.exit(f"only {len(pairs)} pairs — too few to rank encoders; raise --limit")
+    rows = []
+    for url in urls:
+        old = (EMBD_URL, EMBD_MODEL, DB)
+        tmpdir = tempfile.mkdtemp(prefix="hay-pick-")
+        try:
+            globals()["EMBD_URL"], globals()["EMBD_MODEL"] = url, ""
+            globals()["DB"] = Path(tmpdir) / "pick.sqlite"
+            c = connect()
+            reindex(c)
+            r, m = eval_pairs(c, pairs)
+            rows.append((url, r, m, len(pairs)))
+            print(f"  {url}: Recall@3 {r:.3f}  MRR {m:.3f}")
+        except Exception as e:
+            print(f"  {url}: FAILED ({str(e)[:80]})")
+        finally:
+            globals()["EMBD_URL"], globals()["EMBD_MODEL"], globals()["DB"] = old
+    if not rows:
+        sys.exit("pick-encoder: every candidate failed")
+    rows.sort(key=lambda x: (-x[1], -x[2]))
+    print(f"\n{'url':<50} Recall@3   MRR")
+    for url, r, m, n in rows:
+        print(f"{url:<50} {r:.3f}      {m:.3f}   ({n} pairs)")
+    win = rows[0]
+    print(f"\nwinner: {win[0]}  (+{100 * (win[1] - rows[-1][1]):.1f}pp R@3 over worst)")
+    if not yes:
+        print("dry run — re-run with --yes to switch config and rebuild the index")
+        return
+    if win[0] == EMBD_URL:
+        print("winner is the current encoder — config untouched")
+        return
+    t = CFG_PATH.read_text()
+    m = re.search(r"^\[embeddings\]\n(?:(?!\[).*\n)*", t, re.M)
+    if not m:
+        sys.exit("no [embeddings] section in config")
+    seg = m.group(0)
+    new_seg = re.sub(r'^url\s*=\s*".*"$', f'url = "{win[0]}"', seg, flags=re.M)
+    new_seg = re.sub(r'^model\s*=\s*".*"$', 'model = ""', new_seg, flags=re.M)
+    CFG_PATH.write_text(t.replace(seg, new_seg))
+    DB.unlink(missing_ok=True)  # embeddings swapped: full rebuild (learned pins live outside the cache)
+    reindex(connect())
+    print(f"switched to {win[0]}, index rebuilt ({CFG_PATH})")
 
 
 def mine_aliases(con, min_folder_df=2, max_corpus_df=3, top=5):
@@ -751,6 +837,8 @@ def main():
         review(con, " ".join(a[1:]))
     elif cmd == "eval-gen":
         eval_gen(con, int(a[1]) if len(a) > 1 else 0)
+    elif cmd == "pick-encoder":
+        pick_encoder(a[1:])
     elif cmd == "eval":
         eval_run(con, a[1] if len(a) > 1 else None)
     elif cmd == "aliases":
