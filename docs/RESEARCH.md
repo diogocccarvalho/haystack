@@ -80,9 +80,16 @@ RE-LATIVE ranking is what pick-encoder is for.
 - LFM3 query-gen: ~20s/file, serial, ~6.5% CPU — the slowest pipeline stage
   by far. Lever: parallel/batched chat requests, or smaller ctx (8192 is
   oversized for 2-line outputs).
-- llama.cpp build is CPU-only (libggml-cpu). Machine has AMD Renoir iGPU
-  (RADV): rebuild with -DGGML_VULKAN=ON moves bge + reranker (candidates:
-  LFM3, d1) off the CPU threads.
+- llama.cpp Vulkan build ADOPTED (2026-11-13): build-vulkan (-DGGML_VULKAN=ON,
+  deps: vulkan-headers/shaderc/glslang + RADV). bge + reranker now serve from
+  build-vulkan (units notes-embd/notes-rerank, -t 2 each). Verified: embedding
+  cosine vs CPU 0.9999; rerank ordering identical, scores within 0.01;
+  full-stack eval on 53-pair set R@3 0.830 same, MRR 0.783 vs 0.792 (one
+  near-tie flips rank, accepted); audit 8/8+9/9. Under load the Vulkan bge
+  server sits at ~2% CPU with /dev/dri open — CPU threads returned to the
+  desktop. iGPU is ~2.5x SLOWER per batch for these tiny models (transfer
+  overhead) — the win is thread/RAM offload, not speed. CPU build kept as
+  instant rollback. LFM3 and d1 still CPU (candidates for the same swap).
 - RAM (15.4GB total, 13.0GB used): LFM3 1.2GB (8k ctx), d1 1.2GB, granite
   fp32 580MB while running (A/B-only, not a service), bge+reranker ~90MB.
 - Rerank top A/B (2026-11-13, 53-pair synthetic set): top=20 33.7s vs top=10
