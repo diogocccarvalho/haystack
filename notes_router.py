@@ -195,7 +195,7 @@ def _load_learned():
     return []
 
 
-def learn_lookup(con, text, paths, q):
+def learn_lookup(con, text, paths, q, dense=None):
     """Past corrections boost identical/similar queries (and their folder).
     Stored OUTSIDE the index DB (learned.json) so index rebuilds never wipe
     learned ground truth (append-only; Reglos-style persistence)."""
@@ -204,9 +204,19 @@ def learn_lookup(con, text, paths, q):
         return np.zeros(len(paths))
     qs = embed([r["qtext"] for r in rows])
     sims = qs @ q
+    # Model-agnostic match rule: a taught correction deserves the pin only if
+    # it BEATS the corpus's own best hit for this query. Embedders differ in
+    # similarity baseline (bge unrelated ~0.5, granite ~0.7+), so any fixed
+    # absolute threshold misfires on some models; but max(chunk-sim) for THIS
+    # query comes from the SAME encoder, so "entry > corpus best" is
+    # scale-free. Rationale: the user's phrasing, matched against its own
+    # correction, should outrank everything in the vault — a near-tie means
+    # the query is actually about something else. Floor 0.60 guards
+    # degenerate corpora.
+    corpus_best = float(dense.max()) if dense is not None and dense.size else 0.0
     boost = np.zeros(len(paths))
     for row, sim in zip(rows, sims):
-        if sim > 0.75:
+        if sim > 0.60 and sim >= corpus_best + 0.01:
             for i, p in enumerate(paths):
                 if p == row["path"] or p.startswith(row["path"].rsplit("/", 1)[0]):
                     boost[i] += 0.10 * sim * min(row["hits"], 3)
@@ -324,7 +334,7 @@ def rank(con, text, k=5):
         df = sum(1 for t in lowered if w in t)
         if 0 < df <= 3:
             scores += np.array([0.03 if w in t else 0.0 for t in lowered], dtype=np.float32)
-    lboost = learn_lookup(con, text, paths, q)
+    lboost = learn_lookup(con, text, paths, q, dense=dense)
     scores += lboost  # additive post-fusion
     # INDEX.md files are pointer hubs; the note they point to is the content.
     # Small demotion (NOT removal) so hub files stop outranking their targets.

@@ -17,6 +17,9 @@ db = "~/.cache/notes-router/index.sqlite"
 [embeddings]
 # Any OpenAI-compatible /v1/embeddings endpoint works:
 # llama.cpp server, Ollama (/v1), LM Studio, a remote API.
+# Multilingual vault? Serve granite-embedding-97m-multilingual-r2 via
+# scripts/onnx-embed-server.py (PT/52 languages; English quality is -4pp
+# vs bge-small — see docs/RESEARCH.md P3 before switching).
 url = "http://127.0.0.1:8082/v1/embeddings"
 model = ""                            # some endpoints require a model name (e.g. "bge-small-en-v1.5")
 
