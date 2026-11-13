@@ -135,6 +135,11 @@ db — e.g. llama.cpp questions answered from `~/src/llama.cpp/docs` directly.
       teach by n or path)
 - [x] Multilingual embedder path (granite-97m via ONNX, A/B'd)
 
+## Support
+
+If Haystack saved you some context rot:
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-diogocccarvalho-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/diogocccarvalho)
+
 ## License
 
 MIT
