@@ -1,8 +1,8 @@
-# notes-router
+# Haystack
 
 Local semantic router + deterministic editor for your markdown vault.
 
-Static search engines index documents. notes-router also indexes **you**: every
+Static search engines index documents. Haystack also indexes **you**: every
 time a query misses and you correct it, it learns — the correction becomes a
 permanent boost for you and everyone phrasing things the way you do. All local,
 zero cloud, one 35 MB embedding model.
@@ -48,8 +48,8 @@ at your copy — e.g. llama.cpp questions hit `~/src/llama.cpp/docs` directly.
 ```bash
 ./setup.sh                        # model + config template
 # start an embeddings server (see setup.sh output)
-python3 notes_router.py reindex
-python3 notes_router.py query "that thing about the invoices"
+python3 haystack.py reindex
+python3 haystack.py query "that thing about the invoices"
 ```
 
 Requires Python 3.11+ (stdlib + numpy only).
