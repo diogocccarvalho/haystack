@@ -68,6 +68,24 @@ Effort: docs + one benchmark run when switching.
 English STOP once n>=50 chunks. Audit 8/8 + sim 48/48 after the change.
 
 ## Runtime profiling (2026-11-13, the author's rule: >1s ops must be optimized or researched)
+
+**pick-encoder live-vault A/B (2026-11-13, 71 synthetic pairs from 37 files):**
+bge-small 0.704 R@3 / 0.643 MRR vs granite-97m fp32 0.662 / 0.629 — bge wins
++4.2pp, third consecutive bge verdict on this vault. Config untouched. Note
+the absolute scores are much lower than the curated 68-pair eval (1.000):
+fully synthetic self-referential pairs are a harder/humbler benchmark — the
+RE-LATIVE ranking is what pick-encoder is for.
+
+**Profiling (idle machine, all services up):**
+- LFM3 query-gen: ~20s/file, serial, ~6.5% CPU — the slowest pipeline stage
+  by far. Lever: parallel/batched chat requests, or smaller ctx (8192 is
+  oversized for 2-line outputs).
+- llama.cpp build is CPU-only (libggml-cpu). Machine has AMD Renoir iGPU
+  (RADV): rebuild with -DGGML_VULKAN=ON moves bge + reranker (candidates:
+  LFM3, d1) off the CPU threads.
+- RAM (15.4GB total, 13.0GB used): LFM3 1.2GB (8k ctx), d1 1.2GB, granite
+  fp32 580MB while running (A/B-only, not a service), bge+reranker ~90MB.
+- Rerank: ~830ms/query at top=20; top=10 ~450ms is the cheap latency lever.
 Measured (107 files, 1476 chunks, 6 learned entries): embed 1 query 39ms,
 lexical_boost 55ms, learn_lookup embed 61ms, alias mining 14ms, reindex
 incremental ~0.2s. The ONLY >1s operation was the cross-encoder rerank HTTP
