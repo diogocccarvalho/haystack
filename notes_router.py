@@ -533,11 +533,16 @@ def load_qa():
 
 
 def audit(con):
-    pairs = load_qa()
-    if not pairs:
-        sys.exit("qa.json has no pairs — audit needs ground truth to be meaningful.")
+    # Learned corrections ARE ground truth: every `learn` (i.e. every real
+    # "that's not what I want") automatically becomes a QA pair here — no
+    # manual qa.json entry needed. qa.json stays as the seeded extra layer.
+    pairs = load_qa() if QA_FILE.exists() else []
+    learned = [(r["qtext"], r["path"]) for r in _load_learned()]
+    if not pairs and not learned:
+        sys.exit("no ground truth: qa.json empty and learned.json empty.")
     reindex(con)
     passed = failed = 0
+    lpassed = lfailed = 0
     misses = []
     for qtext, expect in pairs:
         top, paths = query(con, qtext, k=5)
@@ -547,7 +552,17 @@ def audit(con):
         else:
             failed += 1
             misses.append((qtext, expect, ranked[0]))
-    line = f"{time.strftime('%Y-%m-%d %H:%M')} audit: {passed}/{passed + failed} passed"
+    for qtext, expect in learned:
+        top, paths = query(con, qtext, k=5)
+        ranked = [paths[i] for i in top]
+        if any(p.startswith(expect) or p == expect for p in ranked[:3]):
+            lpassed += 1
+        else:
+            lfailed += 1
+            misses.append((qtext, expect, ranked[0]))
+    line = (f"{time.strftime('%Y-%m-%d %H:%M')} audit: "
+            f"{passed}/{passed + failed} qa.json, "
+            f"{lpassed}/{lpassed + lfailed} learned passed")
     if misses:
         line += " | misses: " + "; ".join(
             f"{q[:40]!r} want {e[:50]} got {g}" for q, e, g in misses)
