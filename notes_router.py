@@ -33,9 +33,19 @@ from pathlib import Path
 
 import numpy as np
 
-CFG_PATH = Path(os.environ.get("NR_CONFIG", Path.home() / ".config/notes-router/config.toml"))
+def _default_cfg():
+    # New installs use ~/.config/haystack (setup.sh); legacy installs keep
+    # ~/.config/notes-router working. First existing wins.
+    for d in ("haystack", "notes-router"):
+        p = Path.home() / ".config" / d / "config.toml"
+        if p.exists():
+            return p
+    return Path.home() / ".config/haystack/config.toml"
+
+
+CFG_PATH = Path(os.environ.get("NR_CONFIG") or _default_cfg())
 if not CFG_PATH.exists():
-    sys.exit(f"no config at {CFG_PATH} — copy config.toml from the repo and edit vault.path")
+    sys.exit(f"no config at {CFG_PATH} — run setup.sh, or copy config.toml from the repo and edit vault.path")
 
 with open(CFG_PATH, "rb") as f:
     _cfg = tomllib.load(f)
@@ -225,6 +235,7 @@ def learn_lookup(con, text, paths, q, dense=None):
 
 def connect():
     import sqlite3
+    Path(DB).parent.mkdir(parents=True, exist_ok=True)  # config may point anywhere
     con = sqlite3.connect(DB)
     con.execute("""CREATE TABLE IF NOT EXISTS chunks(
         path TEXT, heading TEXT, hash TEXT, vec BLOB, text TEXT)""")
