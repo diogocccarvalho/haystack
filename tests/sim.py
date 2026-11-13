@@ -187,7 +187,7 @@ qa_file = "{tmp / 'qa.json'}"
     check("aliases after weird corpus no crash", r.returncode == 0)
     # --- audit
     r = run_cli(cfg, "audit")
-    check("audit passes its own pairs", r.returncode == 0 and "2/2 passed" in r.stdout,
+    check("audit passes its own pairs", r.returncode == 0 and "2/2 qa.json" in r.stdout and "learned passed" in r.stdout,
           r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[-150:])
 
     # deleted file still served from index -> stale path reported
