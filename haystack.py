@@ -625,33 +625,45 @@ def _llm(prompt, max_tokens=200):
         return json.load(r)["choices"][0]["message"]["content"]
 
 
-def eval_gen(con, limit=0, dest=None):
+def eval_gen(con, limit=0, dest=None, workers=4):
     """P2: synthetic QA — for each (or N sampled) note, generate 2 natural
     queries (nickname-style + literal-style, no verbatim title reuse; arXiv
     2609.38473 protocol) -> qa_gen.json. Synthetic benchmarks reliably RANK
-    retriever variants (arXiv 2508.11758) — exactly what the audit needs."""
+    retriever variants (arXiv 2508.11758) — exactly what the audit needs.
+    Concurrent requests (workers=N): the server is the bottleneck either way,
+    but overlapping streams cuts wall-clock when it has slots (-np)."""
+    from concurrent.futures import ThreadPoolExecutor
     out = []
     files = [p for p in walk() if rel_of(p) not in SKIP_FILES]
     if limit:
         files = files[::max(1, len(files) // limit)]
-    print(f"generating queries for {len(files)} files (this needs the LLM endpoint)...")
-    for i, p in enumerate(files):
+    print(f"generating queries for {len(files)} files ({workers} workers, needs the LLM endpoint)...")
+
+    def gen_one(p):
         head = "\n".join(p.read_text(errors="replace").split("\n")[:15])
-        try:
-            txt = _llm(
-                "You generate test queries for a personal-notes search engine. "
-                "Given a note's start, write 2 search queries the note's OWNER would type: "
-                "one vague/nickname-style, one literal-style. NEVER reuse words from the title verbatim. "
-                "Reply with ONLY the two queries, one per line.\n\n" + head, max_tokens=1024)
-            qs = [x.strip("-*.0123456789. ") for x in txt.strip().split("\n") if x.strip()][:2]
-        except Exception as e:
-            print(f"  skip {rel_of(p)}: {e}")
-            continue
-        for q in qs:
-            if len(q.split()) >= 2:
-                out.append([q, rel_of(p)])
-        if (i + 1) % 10 == 0:
-            print(f"  {i + 1}/{len(files)} files, {len(out)} queries")
+        txt = _llm(
+            "You generate test queries for a personal-notes search engine. "
+            "Given a note's start, write 2 search queries the note's OWNER would type: "
+            "one vague/nickname-style, one literal-style. NEVER reuse words from the title verbatim. "
+            "Reply with ONLY the two queries, one per line.\n\n" + head, max_tokens=1024)
+        return [x.strip("-*.0123456789. ") for x in txt.strip().split("\n") if x.strip()][:2]
+
+    done = [0]
+    def collect(fut):
+        done[0] += 1
+        if done[0] % 10 == 0:
+            print(f"  {done[0]}/{len(files)} files, {len(out)} queries")
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futs = {ex.submit(gen_one, p): p for p in files}
+        for f in futs:
+            f.add_done_callback(collect)
+        for f, p in futs.items():
+            try:
+                for q in f.result():
+                    if len(q.split()) >= 2:
+                        out.append([q, rel_of(p)])
+            except Exception as e:
+                print(f"  skip {rel_of(p)}: {e}")
     gen_file = Path(str(dest) if dest else _cfg.get("audit", {}).get("qa_gen_file", str(CFG_PATH.parent / "qa_gen.json")))
     gen_file.write_text(json.dumps({"pairs": out}, ensure_ascii=False, indent=1))
     print(f"wrote {len(out)} synthetic pairs -> {gen_file}")
@@ -836,7 +848,8 @@ def main():
     elif cmd == "review":
         review(con, " ".join(a[1:]))
     elif cmd == "eval-gen":
-        eval_gen(con, int(a[1]) if len(a) > 1 else 0)
+        eval_gen(con, int(a[1]) if len(a) > 1 else 0,
+                 workers=int(a[2]) if len(a) > 2 else 4)
     elif cmd == "pick-encoder":
         pick_encoder(a[1:])
     elif cmd == "eval":
