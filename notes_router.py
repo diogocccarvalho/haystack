@@ -65,16 +65,23 @@ def embed(texts):
     return np.array([d["embedding"] for d in data["data"]], dtype=np.float32)
 
 
-def chunks_of(path):
-    """[(heading, text)] per file: title blob + one chunk per ## section."""
+def chunks_of(path, rel=None):
+    """[(heading, text)] per file: title blob + one chunk per ## section.
+
+    Every non-title chunk is prefixed with the document title + relative path
+    (poor-man's contextual retrieval: arXiv 2504.19754 found context-enriched
+    chunks + BM25-over-context beat plain chunks; this gives BM25/IDF and the
+    dense model the document identity in every chunk)."""
     t = path.read_text(errors="replace")
     lines = t.split("\n")
     title_blob = []
-    out, cur_head, cur = [], "(top)", []
     for ln in lines[:10]:
         if ln.startswith(("title:", "# ")) and len(ln) > 4:
             title_blob.append(ln)
     title_blob_text = "\n".join(title_blob or lines[:3])
+    rel = rel or path.name
+    ctx = f"[doc: {rel} | {title_blob_text.splitlines()[0] if title_blob_text else ''}]"
+    out, cur_head, cur = [], "(top)", []
     out.append(("(title)", title_blob_text))
     for ln in lines:
         if ln.startswith("## "):
@@ -117,7 +124,15 @@ def chunks_of(path):
             else:
                 long.append((h, txt))
         out = long
-    return [(h, txt.strip()[:1000]) for h, txt in out if txt.strip()]  # BGE ctx=512 tok
+    final = []
+    for h, txt in out:
+        txt = txt.strip()
+        if not txt:
+            continue
+        if h != "(title)":
+            txt = (ctx + "\n" + txt)[:1000]
+        final.append((h, txt))
+    return final  # BGE ctx=512 tok
 
 
 def real_path(rel):
@@ -150,13 +165,42 @@ def walk():
         yield p
 
 
+LEARNED_FILE = CFG_PATH.parent / "learned.json"
+
+
+def _load_learned():
+    if LEARNED_FILE.exists():
+        try:
+            return json.loads(LEARNED_FILE.read_text())
+        except json.JSONDecodeError:
+            sys.exit(f"{LEARNED_FILE}: invalid JSON — fix or delete it")
+    return []
+
+
+def learn_lookup(con, text, paths, q):
+    """Past corrections boost identical/similar queries (and their folder).
+    Stored OUTSIDE the index DB (learned.json) so index rebuilds never wipe
+    learned ground truth (append-only; Reglos-style persistence)."""
+    rows = _load_learned()
+    if not rows:
+        return np.zeros(len(paths))
+    qs = embed([r["qtext"] for r in rows])
+    sims = qs @ q
+    boost = np.zeros(len(paths))
+    for row, sim in zip(rows, sims):
+        if sim > 0.75:
+            for i, p in enumerate(paths):
+                if p == row["path"] or p.startswith(row["path"].rsplit("/", 1)[0]):
+                    boost[i] += 0.10 * sim * min(row["hits"], 3)
+    return boost
+
+
 def connect():
     import sqlite3
     con = sqlite3.connect(DB)
     con.execute("""CREATE TABLE IF NOT EXISTS chunks(
         path TEXT, heading TEXT, hash TEXT, vec BLOB, text TEXT)""")
     con.execute("CREATE TABLE IF NOT EXISTS files(path TEXT, mtime REAL, hash TEXT)")
-    con.execute("CREATE TABLE IF NOT EXISTS learned(qhash TEXT, qtext TEXT, path TEXT, hits INT)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_c ON chunks(path)")
     return con
 
@@ -176,7 +220,7 @@ def reindex(con):
             continue
         cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
         cur.execute("DELETE FROM files WHERE path=?", (rel,))
-        cs = chunks_of(p)
+        cs = chunks_of(p, rel)
         if cs:  # empty/near-empty files: no chunks to embed (embed([]) 400s)
             vecs = embed([c[1] for c in cs])
             for (head, txt), v in zip(cs, vecs):
@@ -193,22 +237,6 @@ def reindex(con):
 
 
 STOP = set("the a an of about my i me that this thing stuff should where do is are for on in to with and or".split())
-
-
-def learn_lookup(con, text, paths, q):
-    """Past corrections boost identical/similar queries (and their folder)."""
-    rows = list(con.execute("SELECT qtext, path, hits FROM learned"))
-    if not rows:
-        return np.zeros(len(paths))
-    qs = embed([r[0] for r in rows])
-    sims = qs @ q
-    boost = np.zeros(len(paths))
-    for (qtext, path, hits), sim in zip(rows, sims):
-        if sim > 0.75:
-            for i, p in enumerate(paths):
-                if p == path or p.startswith(path.rsplit("/", 1)[0]):
-                    boost[i] += 0.10 * sim * min(hits, 3)
-    return boost
 
 
 def lexical_boost(text, texts):
@@ -294,7 +322,7 @@ def index_one(con, p):
     cur = con.cursor()
     cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
     cur.execute("DELETE FROM files WHERE path=?", (rel,))
-    cs = chunks_of(p)
+    cs = chunks_of(p, rel)
     h = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
     vecs = embed([c[1] for c in cs]) if cs else []
     for (head, txt), v in zip(cs, vecs):
@@ -390,21 +418,29 @@ def new_note(dirrel, name, title=None, dry=False):
 
 
 def learn(con, qtext, path, commit=True):
-    if not real_path(path).is_file():
-        sys.exit(f"{path}: not a vault file")
-    cur = con.cursor()
-    row = cur.execute("SELECT qhash, hits FROM learned WHERE qtext=? AND path=?",
-                      (qtext, path)).fetchone()
-    if row:
-        cur.execute("UPDATE learned SET hits=? WHERE qhash=? AND path=?",
-                    (row[1] + 1, row[0], path))
+    if not (real_path(path).is_file() or real_path(path).is_dir()):
+        sys.exit(f"{path}: not a vault path")
+    rows = _load_learned()
+    for row in rows:
+        if row["qtext"] == qtext and row["path"] == path:
+            row["hits"] = min(row["hits"] + 1, 3)
+            break
     else:
-        cur.execute("INSERT INTO learned VALUES(?,?,?,1)",
-                    (hashlib.sha256(qtext.encode()).hexdigest()[:16], qtext, path))
-    if commit:
-        con.commit()
+        rows.append({"qtext": qtext, "path": path, "hits": 1})
+    LEARNED_FILE.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     log_edit("learn", f"{qtext[:60]} -> {path}")
     print(f"learned: {qtext[:60]!r} -> {path}")
+
+
+def unlearn(con, qtext, path):
+    """Negative evidence: remove a wrong learned mapping (append-only record)."""
+    rows = _load_learned()
+    kept = [r for r in rows if not (r["qtext"] == qtext and r["path"] == path)]
+    if len(kept) == len(rows):
+        sys.exit(f"no learned entry for {qtext[:40]!r} -> {path}")
+    LEARNED_FILE.write_text(json.dumps(kept, ensure_ascii=False, indent=1))
+    log_edit("unlearn", f"{qtext[:60]} -> {path}")
+    print(f"unlearned: {qtext[:60]!r} -> {path}")
 
 
 def load_qa():
@@ -517,6 +553,8 @@ def main():
         new_note(a[1], a[2], a[3] if len(a) > 3 and not a[3].startswith("-") else None, dry)
     elif cmd == "learn":
         learn(con, " ".join(a[1:-1]).strip('"'), a[-1])
+    elif cmd == "unlearn":
+        unlearn(con, " ".join(a[1:-1]).strip('"'), a[-1])
     elif cmd == "review":
         review(con, " ".join(a[1:]))
     elif cmd == "aliases":
