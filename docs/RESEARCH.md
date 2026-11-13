@@ -112,6 +112,35 @@ granite-97m-multilingual-r2 from the research above (no Ollama library
 entry; needs an ONNX/Ollama-compatible host that doesn't exist today). The
 multilingual headroom question stays open only for non-English vaults.
 
+**P3 addendum (2026-11-13): granite-97m-multilingual-r2 — VIABLE for the FOSS
+multilingual default, narrowly behind bge on English.** First attempt used
+onnx-community's STATIC int8 (`model_quantized.onnx`): embeddings collapsed
+(all pairs ~0.99) — broken artifact, avoid. Dynamic quant (`model_uint8`) and
+fp32 (`model.onnx`) are correct; fp32 used for the final A/B. Served by
+`scripts/onnx-embed-server.py` (onnxruntime + tokenizers, /v1/embeddings).
+Results (same gates as bge, personal 68-pair + foreign 33 + new PT 14 pairs):
+- bge-small-en: EN personal 1.000/0.917 · PT 1.000/1.000 · foreign 1.000/0.970
+- granite-97m fp32: EN personal 0.956/0.912 · PT 1.000/1.000 · foreign 1.000/0.949
+- Latency/query: bge ~4ms, g97 fp32 ~12ms; g97 needs its own ONNX server.
+CONCLUSION: for FOSS ship BOTH — multilingual default granite-97m (PT/52
+languages at parity, EN cost −4.4pp on nickname-style queries), English-only
+zero-dependency default bge-small (llama.cpp GGUF, faster). Per-vault choice
+via config [embeddings] url/model.
+
+**Pin-rule fix discovered by this A/B (root-caused 2026-11-13):** the learned-
+pin match threshold was absolute (sim > 0.75), calibrated on bge. Granite's
+similarity baseline is ~0.2 higher, so wrong learned pins fired everywhere
+(EN personal fell to 0.206 — the ENCODER was fine, dense ranks were correct;
+the pin layer was hijacking top-3). A z-score rule (mu + 2sd of the learned
+set's own sims) fixed granite but misfired on bge (relative-to-set can't tell
+"no entry matches this query"). Final rule: a pin fires only if the stored
+phrasing BEATS the query's best corpus chunk sim by 0.01 (scale-free: both
+sims come from the same encoder; the user's correction should outrank the
+whole vault when it really applies). Gates: bge back to 1.000/0.917 EN +
+1.000/1.000 PT, granite 0.956/0.912 EN + 1.000/1.000 PT. Lesson generalized:
+any learned/matching layer must be scale-free, never share one encoder's
+similarity distribution with another.
+
 **P5 — Time-aware recall** (Reglos: time/place/recency routes fused by RRF).
 Only relevant if the vault accumulates time-sensitive notes (open-loops
 already acts as the recency layer). Defer.

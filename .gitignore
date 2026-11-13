@@ -3,3 +3,8 @@ __pycache__/
 *.sqlite-journal
 .venv/
 dist/
+__pycache__/
+*.sqlite
+*.sqlite-journal
+.venv/
+dist/

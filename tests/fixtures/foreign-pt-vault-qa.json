@@ -1,0 +1,19 @@
+{
+ "comment": "Synthetic Portuguese vault fixture. All project IDs, people and company names are FICTIONAL; queries are owner-style nickname phrasings. Targets are folder-level (see docs/SHORTCOMINGS.md R6).",
+ "pairs": [
+  ["aquele projeto dos batchs diários da northgate", "work/projects/implementation/905011-PRJ-104550"],
+  ["a análise da revisão da cadeia dos batchs", "work/projects/implementation/905011-PRJ-104550"],
+  ["a segurança das listas de permissão dos serviços críticos", "work/projects/concluded/731002-PRJ-201774"],
+  ["a alteração do serviço de identificação de apólices anuladas", "work/projects/concluded/730400-PRJ-330018"],
+  ["o import do photoarchive no orçamento", "work/projects/concluded/730900-PRJ-401120"],
+  ["a mudança na query string da pesquisa de documentos do clipdesk", "work/projects/concluded/740200-PRJ-112509"],
+  ["as APIs da harborbank no bancassurance", "work/projects/concluded/760300-PRJ-288010"],
+  ["o erro no serviço de submeter participação eletrónica", "work/projects/concluded/KTLO-FixIt-441900"],
+  ["o projeto da unidade de sinistros do time de sinistros", "work/projects/tests/902200-PRJ-551040"],
+  ["o épico de implementação do projeto do gestor de projeto que ficou concluído", "work/projects/concluded/731100-PRJ-602211"],
+  ["a plataforma de comparação de programas eleitorais", "hobbies/projects/electoral-platform.md"],
+  ["os anexos da proposta da revisão dos batchs", "work/projects/implementation/905011-PRJ-104550"],
+  ["the northgate daily batches project", "work/projects/implementation/905011-PRJ-104550"],
+  ["critical services allow-list security project", "work/projects/concluded/731002-PRJ-201774"]
+ ]
+}

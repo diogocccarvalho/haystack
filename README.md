@@ -28,6 +28,11 @@ zero cloud, one 35 MB embedding model.
   Ollama, LM Studio, remote API). Ships with bge-small (35 MB, runs on CPU).
 - sqlite + numpy flat index; mtime-incremental; a few hundred notes reindex in
   seconds. Edit log + optional INDEX.md maintenance on every write.
+- Multilingual: point `[embeddings]` at granite-embedding-97m-multilingual-r2
+  via `scripts/onnx-embed-server.py` (Portuguese + 52 languages validated;
+  see docs/RESEARCH.md for the A/B numbers).
+- Every learned correction is automatically a QA regression pair in `audit` —
+  your corrections ARE the ground truth, no manual test authoring.
 - Everything on your disk. `learn` tables never leave your machine (they can
   contain note names — do not share them raw).
 
@@ -48,8 +53,8 @@ Requires Python 3.11+ (stdlib + numpy only).
       identifier bonus + title field boost — regression-tested on real QA pairs
 - [x] HTTP API mode (`server.py`: /query /find /append /frontmatter /new-note
       /learn /reindex /health, optional bearer token)
-- [ ] Cross-encoder rerank stage (biggest validated jump: Recall@5 0.695→0.816
-      on T2-RAGBench; llama.cpp can host bge-reranker)
-- [ ] Learned per-user term statistics (IDF from your vault)
+- [x] Cross-encoder rerank (ms-marco-MiniLM-L12-v2 GGUF via llama.cpp --reranking;
+      user-taught corrections pin ahead of it — the teacher beats the model)
+- [x] Learned per-user term statistics (corpus-IDF stopwording, any language)
 - [x] Alias mining (`aliases` command + /aliases endpoint): distinctive tokens per leaf folder, offered as `learn` candidates — nothing auto-taught
 - [ ] HTTP /review endpoint (interactive accept/teach)
