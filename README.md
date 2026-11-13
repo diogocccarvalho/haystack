@@ -57,7 +57,8 @@ python3 haystack.py query "that thing about the invoices"
 ```
 
 `--start` auto-detects `llama-server`, launches the embeddings server and
-health-checks it; `--systemd` also installs a user unit. Any
+health-checks it; `--systemd` also installs a user unit. Tested with
+llama.cpp v1.0.0 (post-1.0 stable API); any
 OpenAI-compatible endpoint works instead (Ollama, LM Studio, remote API) —
 point `[embeddings].url` at it. Python 3.11+, stdlib + numpy only.
 
