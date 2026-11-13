@@ -85,7 +85,12 @@ RE-LATIVE ranking is what pick-encoder is for.
   LFM3, d1) off the CPU threads.
 - RAM (15.4GB total, 13.0GB used): LFM3 1.2GB (8k ctx), d1 1.2GB, granite
   fp32 580MB while running (A/B-only, not a service), bge+reranker ~90MB.
-- Rerank: ~830ms/query at top=20; top=10 ~450ms is the cheap latency lever.
+- Rerank top A/B (2026-11-13, 53-pair synthetic set): top=20 33.7s vs top=10
+  22.2s total (0.64s vs 0.42s/query), quality identical (0.830/0.792 vs
+  0.830/0.789) — ADOPTED top=10. Below 10 the fused pool may not contain the
+  answer at all; don't go lower without re-measuring.
+- eval-gen parallelized (client-side, workers=4): 30 files 12min -> 3m50.
+  True server-side parallelism needs LFM3 restarted with --parallel N.
 Measured (107 files, 1476 chunks, 6 learned entries): embed 1 query 39ms,
 lexical_boost 55ms, learn_lookup embed 61ms, alias mining 14ms, reindex
 incremental ~0.2s. The ONLY >1s operation was the cross-encoder rerank HTTP
@@ -113,6 +118,8 @@ same gates):
 - Personal vault: L12 Recall@3 1.000 / MRR 0.926; L6 0.838 / 0.708.
 - Foreign (llama.cpp docs): L12 1.000 / 0.970; L6 1.000 / 0.869.
 - Latency (20 docs x 600 chars, 4 threads CPU): L12 ~830ms, L6 ~425ms.
+  UPDATE 2026-11-13: [rerank] top=20 -> top=10 adopted (same quality, 0.64
+  -> 0.42s/query on the live vault); the ~830ms figure above was top=20.
 Conclusion: L6 is exactly 2x faster and materially worse; on the corpus the
 tool actually serves it drops 16pp of Recall@3. Keep ms-marco-MiniLM-L12-v2
 Q8_0. Next lever if latency ever matters: [rerank] top=10 (~450ms at L12
