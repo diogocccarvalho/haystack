@@ -101,6 +101,15 @@ Q8_0. Next lever if latency ever matters: [rerank] top=10 (~450ms at L12
 speed). The MO7YW4NG "same accuracy class" claim does not transfer to
 long-prose note retrieval.
 
+**P1 addendum 2 (2026-11-13, corpus 110 files): rerank ON vs OFF measured.**
+The rejection above is L6-vs-L12 (model swap). Rerank-on-vs-off was untested
+until now; qa_gen.json eval, same index, live vault:
+- Rerank ON (L12 Q8_0): Recall@3 1.000 / MRR 0.912.
+- Rerank OFF (fused only): Recall@3 0.971 / MRR 0.895.
++2.9pp Recall@3 / +1.7pp MRR — keep the reranker enabled on :8084; it earns
+its RAM on the current corpus. Re-measure if the corpus doubles or latency
+budget changes.
+
 **P3 benchmark (2026-11-13): granite via Ollama — REJECTED on this vault.**
 Ollama's `granite-embedding` (30M params, 384-dim — drop-in for bge-small's
 384, same /v1/embeddings shape). A/B, same index pipeline, fresh DBs:
