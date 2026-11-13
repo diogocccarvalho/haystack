@@ -1,0 +1,17 @@
+[vault]
+path = "/home/diogo/.hermes/cache/scratch/nr-foreign/docs"
+index_convention = "list"
+exclude_dirs = []
+exclude_files = []
+external = []
+[index]
+db = "/home/diogo/.hermes/cache/scratch/nr-foreign.sqlite"
+[embeddings]
+url = "http://127.0.0.1:8082/v1/embeddings"
+model = ""
+[rerank]
+url = "http://127.0.0.1:8084"
+top = 20
+
+[audit]
+qa_file = "/home/diogo/.hermes/cache/scratch/nr-foreign-qa.json"

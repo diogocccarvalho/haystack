@@ -82,24 +82,21 @@ implications are the design.
   when a validator says the cheap path failed. (This is the overthinking
   paper observation from the crystallization README, met in production.)
 
-## R8. The learning loop has no eyes without the agent
-- What: nothing in the product notices a wrong answer by itself; misses are
-  only caught because Diogo (or the agent, via QA pairs) says so. The
-  feedback loop's sensor is a human or an agent turn.
-- Plugin patch: skill rule — agent auto-learns on correction; audit cron.
-- Architectural implication: self-improvement needs a standing validator,
-  not an occasional teacher. The from-scratch architecture's "auditor blocks"
-  must run continuously against replayable ground truth, or crystallization
-  crystallizes mistakes.
-
 ## R9. Known-but-unfixed (tracked, not hidden)
-- Chunker heuristics tuned on ONE vault (Diogo's); no evidence they
-  generalize. → needs a foreign-vault validation run before publish.
+- ~~Chunker heuristics tuned on ONE vault (Diogo's); no evidence they
+  generalize.~~ → VALIDATED 2026-11-13: foreign-vault known-answer eval on
+  llama.cpp docs/ (55 files): 33 agent-authored owner-style pairs with
+  verified targets (nr-foreign-qa.json, scratch), Recall@3 1.000 MRR 0.970.
+  One pair needed disambiguation — ops.md is reachable via its distinctive
+  intro wording but loses rerank to any backend doc's "Supported Operations"
+  section on generic phrasing (same class as R6: set-valued ground truth).
+  Caveats: one foreign corpus only; pairs authored by the agent (circularity
+  below still applies).
 - QA ground truth written by the same agent that built the retriever →
   circularity risk. eval-gen's small-model queries partially break the
   circularity; keep both sources.
-- 8 hand QA pairs + 68 agent pairs is still a small eval; recall numbers are
-  directionally useful, not proof.
+- 8 hand QA pairs + 68 agent pairs (+33 foreign) is still a small eval;
+  recall numbers are directionally useful, not proof.
 - bge-small embedder is 2021-generation (see RESEARCH.md P3) — swap gated on
   multilingual needs and GGUF availability.
 
@@ -126,10 +123,12 @@ implications are the design.
 
 ## Running log (append on every new failure, date + entry)
 - 2026-11-13: R1, R2, R4 found live; R3, R5, R6 found in the 68-pair eval
-  (63/68 → 5 misses diagnosed to root causes); R7 found building eval-gen;
-  R8 is standing state; R10 found in the foreign-vault robustness test.
+  (63/68 → 5 misses diagnosed to root causes);  R7 found building eval-gen; R10 found in the foreign-vault robustness test.
 - Fix status: R1 ✓ (pins), R2 ✓ (fallback keeps pins), R4 ✓ (learned.json),
   R5 ✓ (INDEX excluded from rerank), R6 ✓ (family-level eval truth),
   R7 ✓ (enable_thinking=False; agent-as-generator per Diogo), R3 partial
-  (cap 600 chars; L6 GGUF unavailable), R8 standing (agent-in-the-loop),
-  R9 open (foreign-vault quality), R10 ✓ (embed_resilient).
+  (cap 600 chars; L6 GGUF unavailable),
+  R8 removed by Diogo's call (2026-11-13): agent-in-the-loop is by design,
+  not a shortcoming,
+  R9 mostly closed (foreign-vault quality VALIDATED 1.000/0.970; residual:
+  circularity, eval size, embedder generation), R10 ✓ (embed_resilient).
