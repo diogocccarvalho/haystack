@@ -33,3 +33,18 @@ qa_file = "~/.config/haystack/qa.json"
 # url = "http://127.0.0.1:8084"
 # top = 20          # 10 -> ~450ms/call (interactive), 20 -> ~1s (max quality)
 # max_chars = 600    # reranker input cap (latency lever)
+
+[temporal]
+# relative-time queries ("what did I ask yesterday"): recency + asked-before
+# boosts (inert on queries without a time expression). Weights are additive
+# on the fused score (~0.006-0.012 range).
+# weight = 0.008      # file mtime inside the window
+# asked_weight = 0.004 # file answered a logged query inside the window
+
+[clusters]
+# semantic cluster layer (k-means over title chunks; `clusters` lists them).
+# Measured NEUTRAL-NEGATIVE on content alone (-1pp MRR at every weight);
+# off until clusters come from usage/query patterns, not text.
+enable = false
+# weight = 0.001
+# k = 0               # 0 = auto (sqrt of file count)

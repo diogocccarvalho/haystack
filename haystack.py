@@ -13,6 +13,8 @@ Usage:
   haystack.py new-note <dir> <name> ["Title"] [--dry-run]
   haystack.py learn "<query>" <path>   # teach a correction
   haystack.py review <text>            # interactive feedback loop
+  haystack.py recent [n] [op]          # last n logged events (query/append/...)
+  haystack.py clusters                 # semantic cluster pass output (labels+members)
   haystack.py aliases                  # mine nickname candidates per folder
   haystack.py audit                    # reindex + run QA pairs (exit 1 on miss)
   haystack.py pick-encoder <url> [--pairs f] [--limit N] [--yes]
@@ -249,8 +251,73 @@ def connect():
     con.execute("""CREATE TABLE IF NOT EXISTS chunks(
         path TEXT, heading TEXT, hash TEXT, vec BLOB, text TEXT)""")
     con.execute("CREATE TABLE IF NOT EXISTS files(path TEXT, mtime REAL, hash TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS events(ts REAL, op TEXT, path TEXT, text TEXT)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_c ON chunks(path)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_e ON events(ts)")
+    con.execute("CREATE TABLE IF NOT EXISTS clusters(path TEXT, cid INTEGER)")
+    con.execute("CREATE TABLE IF NOT EXISTS cluster_meta(cid INTEGER, label TEXT, centroid BLOB)")
     return con
+
+
+def log_event(con, op, path="", text=""):
+    con.execute("INSERT INTO events VALUES(?,?,?,?)", (time.time(), op, path, text))
+    con.commit()
+
+
+def parse_when(text):
+    """Relative-time expressions in a query -> (start_ts, end_ts). None if absent."""
+    now = time.time()
+    day = 86400.0
+    midnight = now - (now % day) - time.timezone
+    m = (re.search(r"\b(?:in the )?last (\d+)\s*(day|week|month)s?\b", text)
+         or re.search(r"\b(?:from )?(\d+)\s*(day|week|month)s? ago\b", text))
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        span = n * (day if unit == "day" else 7 * day if unit == "week" else 30 * day)
+        return now - span, now
+    if re.search(r"\byesterday\b", text):
+        return midnight - day, midnight
+    if re.search(r"\b(today|this morning|last night|earlier today)\b", text):
+        return midnight, now
+    if re.search(r"\bthis week\b", text):
+        return now - 7 * day, now
+    if re.search(r"\blast week\b", text):
+        return now - 14 * day, now - 7 * day
+    if re.search(r"\bthis month\b", text):
+        return now - 30 * day, now
+    return None
+
+
+def temporal_boost(con, text, paths):
+    """Two additive boosts when the query has a time expression:
+    recency (file mtime inside the window, weighted by freshness) and
+    asked-before (paths that answered recent logged queries in the window)."""
+    w = float(_cfg.get("temporal", {}).get("weight", 0.008))
+    w_ask = float(_cfg.get("temporal", {}).get("asked_weight", 0.004))
+    win = parse_when(text)
+    if win is None:
+        return np.zeros(len(paths), dtype=np.float32)
+    start, end = win
+    now = time.time()
+    mt = {r[0]: r[1] for r in con.execute("SELECT path, mtime FROM files")}
+    span = max(1.0, end - start)
+    boost = np.zeros(len(paths), dtype=np.float32)
+    for i, p in enumerate(paths):
+        m = mt.get(p)
+        if m and start <= m <= end:
+            boost[i] += w * max(0.15, 1.0 - (now - m) / span)
+    asked = {}
+    for path, in con.execute(
+            "SELECT path FROM events WHERE op='query' AND path!='' AND ts BETWEEN ? AND ?",
+            (start, end)):
+        asked[path] = asked.get(path, 0) + 1
+    for i, p in enumerate(paths):
+        if p in asked:
+            boost[i] += w_ask * min(asked[p], 3)
+        folder = p.rsplit("/", 1)[0] if "/" in p else p
+        if any(q.startswith(folder + "/") for q in asked):
+            boost[i] += w_ask / 2
+    return boost
 
 
 def reanchor(con, moved=False):
@@ -328,8 +395,77 @@ def reindex(con):
         cur.execute("DELETE FROM files WHERE path=?", (rel,))
         n_del += 1
     con.commit()
+    if n_new or n_del or not con.execute("SELECT 1 FROM cluster_meta LIMIT 1").fetchone():
+        cluster(con)
     reanchor(con, moved=(n_new > 0 and n_del > 0))
+    if n_del:
+        for rel in set(db_files) - seen:
+            log_event(con, "move-out", rel)
+    if n_new:
+        log_event(con, "reindex", f"{n_new} updated, {n_del} removed")
     print(f"indexed: {n_new} updated, {n_del} removed, {sum(1 for _ in walk())} files")
+
+
+def kmeans(mat, k, iters=12, seed=0):
+    """Deterministic k-means (numpy only). Empty clusters re-seeded on farthest point."""
+    rng = np.random.RandomState(seed)
+    n = len(mat)
+    k = max(2, min(k, n))
+    cent = mat[rng.choice(n, k, replace=False)].copy()
+    assign = np.zeros(n, dtype=int)
+    for _ in range(iters):
+        sims = mat @ cent.T
+        assign = sims.argmax(axis=1)
+        for c in range(k):
+            mem = mat[assign == c]
+            if len(mem):
+                cent[c] = mem.mean(axis=0)
+            else:
+                cent[c] = mat[sims.min(axis=1).argmin()]
+    return assign, cent
+
+
+def cluster(con):
+    """Semantic cluster pass over title-chunk embeddings (file-level). Pure
+    numpy k-means; labels = most distinctive tokens inside vs corpus. The
+    clusters table is the virtual semantic layer — physical folders untouched."""
+    if not _cfg.get("clusters", {}).get("enable", False):
+        return
+    rows = list(con.execute("SELECT path, vec FROM chunks WHERE heading='(title)'"))
+    if len(rows) < 8:
+        return
+    mat = np.vstack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    mat = mat / np.maximum(norms, 1e-8)
+    paths = [r[0] for r in rows]
+    k = int(_cfg.get("clusters", {}).get("k", 0)) or max(4, round(math.sqrt(len(rows))))
+    assign, cent = kmeans(mat, k)
+    cent = cent / np.maximum(np.linalg.norm(cent, axis=1, keepdims=True), 1e-8)
+    corpus = [t.lower() for t, in con.execute("SELECT text FROM chunks WHERE heading='(title)'")]
+    labels = {}
+    for c in range(len(cent)):
+        members = [i for i in range(len(rows)) if assign[i] == c]
+        if not members:
+            continue
+        toks = {}
+        for i in members:
+            for w in set(re.findall(r"\w{4,}", paths[i].lower() + " " + corpus[i])):
+                if w in STOP:
+                    continue
+                toks[w] = toks.get(w, 0) + 1
+        df = {w: sum(1 for t in corpus if w in t) for w in toks}
+        top = sorted(toks, key=lambda w: (-toks[w] / max(1, df[w]), -toks[w]))[:3]
+        labels[c] = "/".join(top)
+    cur = con.cursor()
+    cur.execute("DELETE FROM clusters")
+    cur.execute("DELETE FROM cluster_meta")
+    for i, p in enumerate(paths):
+        cur.execute("INSERT INTO clusters VALUES(?,?)", (p, int(assign[i])))
+    for c, lab in labels.items():
+        cur.execute("INSERT INTO cluster_meta VALUES(?,?,?)",
+                    (c, lab, cent[c].astype(np.float32).tobytes()))
+    con.commit()
+    log_event(con, "cluster", f"k={len(labels)}")
 
 
 STOP = set("the a an of about my i me that this thing stuff should where do is are for on in to with and or".split())
@@ -362,6 +498,34 @@ def lexical_boost(text, texts):
         tf = np.minimum(np.array([t.count(w) for t in lowered], dtype=np.float32), 2.0)
         boost += idf * tf
     return 0.10 * boost
+
+
+def cluster_boost(con, paths, q):
+    """Query-vs-centroid sim boosts a cluster's members (semantic folder layer).
+    Gated by margin above the mean centroid sim so mid-similarity clusters
+    (bge unrelated ~0.5) stay untouched."""
+    w = float(_cfg.get("clusters", {}).get("weight", 0.001))
+    if not _cfg.get("clusters", {}).get("enable", False):
+        return np.zeros(len(paths), dtype=np.float32)
+    meta = list(con.execute("SELECT cid, centroid FROM cluster_meta"))
+    if not meta or len(meta) < 2:
+        return np.zeros(len(paths), dtype=np.float32)
+    cents = np.vstack([np.frombuffer(c, dtype=np.float32) for _, c in meta])
+    cids = [cid for cid, _ in meta]
+    sims = cents @ q
+    if sims.max() - sims.mean() < 0.08:
+        return np.zeros(len(paths), dtype=np.float32)
+    best_c = cids[int(sims.argmax())]
+    members = {p for p, cid in con.execute("SELECT path, cid FROM clusters") if cid == best_c}
+    boost = np.zeros(len(paths), dtype=np.float32)
+    for i, p in enumerate(paths):
+        if p in members:
+            boost[i] = w * float(sims.max())
+        else:
+            folder = p.rsplit("/", 1)[0] if "/" in p else p
+            if any(m == folder or m.startswith(folder + "/") for m in members):
+                boost[i] = w * float(sims.max()) / 2
+    return boost
 
 
 def load_all(con):
@@ -403,6 +567,8 @@ def rank(con, text, k=5):
             scores += np.array([0.03 if w in t else 0.0 for t in lowered], dtype=np.float32)
     lboost = learn_lookup(con, text, paths, q, dense=dense)
     scores += lboost  # additive post-fusion
+    scores += temporal_boost(con, text, paths)
+    scores += cluster_boost(con, paths, q)
     # INDEX.md files are pointer hubs; the note they point to is the content.
     # Small demotion (NOT removal) so hub files stop outranking their targets.
     for i, p in enumerate(paths):
@@ -451,12 +617,41 @@ def rerank(con, text, order, texts, pinned=(), paths_rel=()):
     return pinned + ranked + tail  # pinned = learned corrections, always first
 
 
-def query(con, text, k=5):
+def query(con, text, k=5, log=False):
     top, paths, heads, texts, scores = rank(con, text, k)
     for i in top:
         snip = re.sub(r"\s+", " ", str(texts[i])[:180])
         print(f"{paths[i]}\t{heads[i]}\t{scores[i]:.3f}\t{snip}")
+    if log and len(top):
+        log_event(con, "query", paths[int(top[0])], text)
     return top, paths
+
+
+def recent(con, n=20, op=""):
+    """Last n logged events (all ops, or one op). The query history powers
+    temporal 'asked-before' ranking."""
+    if op:
+        rows = con.execute(
+            "SELECT ts, op, path, text FROM events WHERE op=? ORDER BY ts DESC LIMIT ?",
+            (op, n)).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT ts, op, path, text FROM events ORDER BY ts DESC LIMIT ?",
+            (n,)).fetchall()
+    for ts, o, p, t in rows:
+        print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}\t{o}\t{p}\t{t}")
+
+
+def list_clusters(con):
+    for cid, label, n in con.execute(
+            """SELECT m.cid, m.label, COUNT(c.path) FROM cluster_meta m
+               LEFT JOIN clusters c ON c.cid = m.cid
+               GROUP BY m.cid ORDER BY COUNT(c.path) DESC"""):
+        members = [p for p, c in con.execute(
+            "SELECT path, cid FROM clusters WHERE cid=?", (cid,))]
+        print(f"[{cid}] {label}  ({n})")
+        for p in members[:8]:
+            print(f"    {p}")
 
 
 def find_file(con, words):
@@ -527,6 +722,7 @@ def append(file_ref, heading, text, dry=False):
     p.write_text(new)
     update_index(p)
     log_edit("append", f"{file_ref}#{heading} {text[:60]}")
+    log_event(connect(), "append", str(rel_of(p)), text[:80])
     index_one(connect(), p)
     print(f"appended -> {file_ref} #{heading}")
 
@@ -550,6 +746,7 @@ def set_frontmatter(file_ref, kv, dry=False):
     p.write_text(new)
     update_index(p)
     log_edit("frontmatter", f"{file_ref} {key}={val}")
+    log_event(connect(), "frontmatter", str(rel_of(p)), f"{key}={val}")
     index_one(connect(), p)
     print(f"{file_ref}: {key}={val}")
 
@@ -568,6 +765,7 @@ def new_note(dirrel, name, title=None, dry=False):
     p.write_text(f'---\ntitle: "{title or name}"\ndate: {DATE}\nstatus: active\n---\n\n# {title or name}\n\n')
     update_index(p)
     log_edit("new-note", str(p))
+    log_event(connect(), "new-note", str(rel_of(p)))
     index_one(connect(), p)
     print(p)
 
@@ -893,7 +1091,20 @@ def main():
         if "-k" in a:
             k = int(a[a.index("-k") + 1])
             a = a[:a.index("-k")] + a[a.index("-k") + 2:]
-        query(con, " ".join(a[1:]), k)
+        query(con, " ".join(a[1:]), k, log=True)
+    elif cmd == "recent":
+        args = a[1:]
+        op = ""
+        n = 20
+        if args and args[0].lstrip("-").isdigit():
+            n = abs(int(args[0]))
+            args = args[1:]
+        if args and args[0] in ("query", "append", "reindex", "move-out",
+                                "new-note", "cluster", "learn"):
+            op = args[0]
+        recent(con, n, op)
+    elif cmd == "clusters":
+        list_clusters(con)
     elif cmd == "find-file":
         find_file(con, a[1:])
     elif cmd == "append":

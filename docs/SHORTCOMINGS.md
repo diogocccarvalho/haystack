@@ -108,3 +108,11 @@ from-scratch architecture gets the rules.
   not a shortcoming,
   R9 mostly closed (foreign-vault quality VALIDATED 1.000/0.970; residual:
   circularity, eval size, embedder generation), R10 ✓ (embed_resilient).
+- 2026-11-14: R11 — semantic clusters from CONTENT don't rank. k-means over
+  title embeddings (111 files, k=11), cluster-boost tried at w 0.001-0.06:
+  -1pp MRR at every weight, 0 R@3 gain → shipped enable=false. Diagnosis:
+  content-only clusters on a small vault are too coarse (members span real
+  topics); the layer likely pays off only when clusters come from USAGE
+  (query/correction patterns), which needs the events log (also 2026-11-14:
+  temporal boosts + `recent` shipped, neutral on non-temporal queries by
+  construction, audit+eval unchanged 0.792/0.755).
