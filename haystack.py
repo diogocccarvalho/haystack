@@ -201,6 +201,8 @@ def walk():
 
 LEARNED_FILE = CFG_PATH.parent / "learned.json"
 _NO_REANCHOR = False  # pick-encoder's throwaway reindexes must not touch real pins
+_PIN_VEC_CACHE = {}   # qtext-tuple -> pin vectors (learn() rewrites rows -> new key)
+_LOAD_CACHE = {"gen": None, "data": None}  # (events-rowid, chunk-count) -> load_all tuple
 
 
 def _load_learned():
@@ -219,10 +221,16 @@ def learn_lookup(con, text, paths, q, dense=None):
     rows = _load_learned()
     if not rows or q is None:  # no embedder: pins can't fire, degrade silently
         return np.zeros(len(paths))
-    try:
-        qs = embed([r["qtext"] for r in rows])
-    except (urllib.error.URLError, TimeoutError):
-        return np.zeros(len(paths))
+    key = tuple(r["qtext"] for r in rows)
+    cached = _PIN_VEC_CACHE.get(key)
+    if cached is None:
+        try:
+            cached = embed([r["qtext"] for r in rows])
+        except (urllib.error.URLError, TimeoutError):
+            return np.zeros(len(paths))
+        _PIN_VEC_CACHE.clear()  # keep only the newest pin set: rows are few, cache is cheap
+        _PIN_VEC_CACHE[key] = cached
+    qs = cached
     sims = qs @ q
     # Model-agnostic match rule: a taught correction deserves the pin only if
     # it BEATS the corpus's own best hit for this query. Embedders differ in
@@ -545,6 +553,15 @@ def cluster_boost(con, paths, q):
 
 
 def load_all(con):
+    """Chunk matrix, cached per (events-rowid, chunk-count). Mutations all go
+    through reindex()/index_one() which log an event, so the rowid bump is the
+    cross-process invalidation signal (a CLI reindex in another session
+    invalidates a long-lived API server's cache). Content edits always touch
+    mtime -> reindex re-logs. Single-slot: one corpus is live per process."""
+    key = (con.execute("SELECT MAX(rowid) FROM events").fetchone()[0],
+           con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+    if _LOAD_CACHE["gen"] == key and _LOAD_CACHE["data"] is not None:
+        return _LOAD_CACHE["data"]
     rows = list(con.execute("SELECT path, heading, vec, text FROM chunks"))
     paths = [r[0] for r in rows]
     heads = [r[1] for r in rows]
@@ -553,6 +570,7 @@ def load_all(con):
     else:
         mat = np.zeros((0, 384), dtype=np.float32)
     texts = [r[3] for r in rows]
+    _LOAD_CACHE["gen"], _LOAD_CACHE["data"] = key, (paths, heads, mat, texts)
     return paths, heads, mat, texts
 
 
@@ -707,6 +725,7 @@ def index_one(con, p):
                     (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
         cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
     con.commit()
+    log_event(con, "index", rel)  # bumps events rowid: invalidates load_all caches
 
 
 def update_index(fpath):
@@ -1024,6 +1043,7 @@ def pick_encoder(args):
             globals()["EMBD_URL"], globals()["EMBD_MODEL"] = url, ""
             globals()["DB"] = Path(tmpdir) / "pick.sqlite"
             globals()["_NO_REANCHOR"] = True  # throwaway A/B: never rewrite real pins
+            globals()["_PIN_VEC_CACHE"].clear()  # candidate encoder: cached pin vecs are invalid
             c = connect()
             if not reindex(c):
                 print(f"  {url}: FAILED (embeddings unreachable)")
@@ -1036,6 +1056,7 @@ def pick_encoder(args):
         finally:
             globals()["EMBD_URL"], globals()["EMBD_MODEL"], globals()["DB"] = old
             globals()["_NO_REANCHOR"] = False
+            globals()["_PIN_VEC_CACHE"].clear()
     if not rows:
         sys.exit("pick-encoder: every candidate failed")
     rows.sort(key=lambda x: (-x[1], -x[2]))
