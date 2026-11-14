@@ -136,6 +136,10 @@ db — e.g. llama.cpp questions answered from `~/src/llama.cpp/docs` directly.
       teach by n or path)
 - [x] Multilingual embedder path (granite-97m via ONNX, A/B'd)
 
+## Featured in
+
+- [Awesome-LLM-RAG](https://github.com/jxzhangjhu/Awesome-LLM-RAG) — curated RAG list (PR [#66](https://github.com/jxzhangjhu/Awesome-LLM-RAG/pull/66))
+
 ## Support
 
 If Haystack saved you some context rot:
