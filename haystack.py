@@ -200,6 +200,7 @@ def walk():
 
 
 LEARNED_FILE = CFG_PATH.parent / "learned.json"
+_NO_REANCHOR = False  # pick-encoder's throwaway reindexes must not touch real pins
 
 
 def _load_learned():
@@ -216,9 +217,12 @@ def learn_lookup(con, text, paths, q, dense=None):
     Stored OUTSIDE the index DB (learned.json) so index rebuilds never wipe
     learned ground truth (append-only; Reglos-style persistence)."""
     rows = _load_learned()
-    if not rows:
+    if not rows or q is None:  # no embedder: pins can't fire, degrade silently
         return np.zeros(len(paths))
-    qs = embed([r["qtext"] for r in rows])
+    try:
+        qs = embed([r["qtext"] for r in rows])
+    except (urllib.error.URLError, TimeoutError):
+        return np.zeros(len(paths))
     sims = qs @ q
     # Model-agnostic match rule: a taught correction deserves the pin only if
     # it BEATS the corpus's own best hit for this query. Embedders differ in
@@ -332,7 +336,7 @@ def reanchor(con, moved=False):
     re-anchor, or a near-duplicate decoy file silently inherits the pin. No
     confident match = pin stays stale and audit keeps flagging it — a wrong
     auto-reanchor lies, a stale pin fails loudly."""
-    if not moved:
+    if not moved or _NO_REANCHOR:
         return
     rows = _load_learned()
     live = {r[0]: r[1] for r in con.execute("SELECT path, hash FROM files")}
@@ -348,8 +352,11 @@ def reanchor(con, moved=False):
             if len(hits) == 1:
                 new_path = hits[0]
         if new_path is None and row.get("anchor") and titles:
-            av = embed([row["anchor"]])[0]
-            tv = embed([t for _, t in titles])
+            try:
+                av = embed([row["anchor"]])[0]
+                tv = embed([t for _, t in titles])
+            except (urllib.error.URLError, TimeoutError):
+                continue  # no embedder: hash path already tried, leave stale for audit
             sims = tv @ av
             order = np.argsort(-sims)
             best = float(sims[order[0]])
@@ -367,6 +374,14 @@ def reanchor(con, moved=False):
 
 
 def reindex(con):
+    # Probe the embedder BEFORE touching the index: a down endpoint must not
+    # turn reindex into a mass delete of good chunks (every changed/removed
+    # file is deleted first, and could not be re-embedded after).
+    try:
+        embed(["__probe__"])
+    except (urllib.error.URLError, TimeoutError) as e:
+        print(f"embeddings endpoint unreachable ({str(e)[:80]}) — index left untouched")
+        return False
     db_files = {r[0]: (r[1], r[2]) for r in con.execute("SELECT path, mtime, hash FROM files")}
     cur = con.cursor()
     n_new = n_del = 0
@@ -404,6 +419,7 @@ def reindex(con):
     if n_new:
         log_event(con, "reindex", f"{n_new} updated, {n_del} removed")
     print(f"indexed: {n_new} updated, {n_del} removed, {sum(1 for _ in walk())} files")
+    return True
 
 
 def kmeans(mat, k, iters=12, seed=0):
@@ -505,8 +521,8 @@ def cluster_boost(con, paths, q):
     Gated by margin above the mean centroid sim so mid-similarity clusters
     (bge unrelated ~0.5) stay untouched."""
     w = float(_cfg.get("clusters", {}).get("weight", 0.001))
-    if not _cfg.get("clusters", {}).get("enable", False):
-        return np.zeros(len(paths), dtype=np.float32)
+    if not _cfg.get("clusters", {}).get("enable", False) or q is None:
+        return np.zeros(len(paths), dtype=np.float32)  # q=None: embedder down (lexical-only path)
     meta = list(con.execute("SELECT cid, centroid FROM cluster_meta"))
     if not meta or len(meta) < 2:
         return np.zeros(len(paths), dtype=np.float32)
@@ -547,18 +563,29 @@ def rank(con, text, k=5):
     paths, heads, mat, texts = load_all(con)
     if not paths:
         return np.array([], dtype=int), paths, heads, texts, np.array([])
-    q = embed([text])[0]
+    try:
+        q = embed([text])[0]
+    except (urllib.error.URLError, TimeoutError) as e:
+        # R2 extended to the primary embedder: retrieval must never hard-depend
+        # on a server being up. Without embeddings, rank lexically (weaker:
+        # no paraphrase, but identifiers still hit) instead of crashing.
+        log_edit("embed-fallback", str(e)[:80])
+        q = None
     n = len(paths)
-    dense = mat @ q
     lex = lexical_boost(text, texts)
     # field boost: title/top chunks dominate in both streams (WANDS: biggest gain)
     title_mask = np.array([1.15 if h in ("(title)", "(top)") else 1.0 for h in heads])
-    dense_rank = np.empty(n, dtype=int)
-    dense_rank[np.argsort(-(dense * title_mask))] = np.arange(n)
     lex_rank = np.empty(n, dtype=int)
     lex_rank[np.argsort(-(lex * title_mask))] = np.arange(n)
     K = 60.0
-    scores = (0.7 / (K + dense_rank + 1) + 0.3 / (K + lex_rank + 1)).astype(np.float32)
+    if q is not None:
+        dense = mat @ q
+        dense_rank = np.empty(n, dtype=int)
+        dense_rank[np.argsort(-(dense * title_mask))] = np.arange(n)
+        scores = (0.7 / (K + dense_rank + 1) + 0.3 / (K + lex_rank + 1)).astype(np.float32)
+    else:
+        dense = None
+        scores = (1.0 / (K + lex_rank + 1)).astype(np.float32)
     # rare-token exact hit: identifiers win (financial-docs 2026: BM25 beats dense here)
     lowered = [t.lower() for t in texts]
     for w in set(re.findall(r"\w{4,}", text.lower())) - STOP:
@@ -791,6 +818,10 @@ def learn(con, qtext, path, commit=True):
         cs = chunks_of(rp)
         if cs and cs[0][0] == "(title)" and cs[0][1].strip():
             fanchor = cs[0][1]
+    path = rel_of(rp)  # store index-relative paths only: absolute paths can
+    # never match ranked paths (audit compares startswith) — a pin would be
+    # dead on arrival. Real case: a pin learned with an absolute path sat
+    # unmatchable until hand-normalized.
     rows = _load_learned()
     for row in rows:
         if row["qtext"] == qtext and row["path"] == path:
@@ -992,8 +1023,11 @@ def pick_encoder(args):
         try:
             globals()["EMBD_URL"], globals()["EMBD_MODEL"] = url, ""
             globals()["DB"] = Path(tmpdir) / "pick.sqlite"
+            globals()["_NO_REANCHOR"] = True  # throwaway A/B: never rewrite real pins
             c = connect()
-            reindex(c)
+            if not reindex(c):
+                print(f"  {url}: FAILED (embeddings unreachable)")
+                continue
             r, m = eval_pairs(c, pairs)
             rows.append((url, r, m, len(pairs)))
             print(f"  {url}: Recall@3 {r:.3f}  MRR {m:.3f}")
@@ -1001,6 +1035,7 @@ def pick_encoder(args):
             print(f"  {url}: FAILED ({str(e)[:80]})")
         finally:
             globals()["EMBD_URL"], globals()["EMBD_MODEL"], globals()["DB"] = old
+            globals()["_NO_REANCHOR"] = False
     if not rows:
         sys.exit("pick-encoder: every candidate failed")
     rows.sort(key=lambda x: (-x[1], -x[2]))

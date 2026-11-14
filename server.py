@@ -64,6 +64,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "empty query"}); return
                 k = int(body.get("k", 5))
                 top, paths, heads, texts, scores = nr.rank(con, body["q"], k)
+                if len(top):  # log for temporal asked-before (the agent's real query path)
+                    nr.log_event(con, "query", paths[int(top[0])], body["q"])
                 out = [{"path": paths[i], "heading": heads[i],
                         "score": round(float(scores[i]), 4),
                         "snippet": texts[i][:180]} for i in top]

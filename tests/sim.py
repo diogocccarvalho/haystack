@@ -237,6 +237,48 @@ qa_file = "{tmp / 'qa.json'}"
     run_cli(cfg, "unlearn", "where is my money thing", "proj/movable-moved.md")
     run_cli(cfg, "unlearn", "legacy pin", "misc/long-gone.md")
 
+    # --- embedder-down degradation (R2 extended to the primary embedder)
+    dead = tmp / "deademb.toml"
+    dead.write_text(cfg.read_text().replace("8082/v1/embeddings", "59997/v1/embeddings"))
+    r = run_cli(dead, "query", "alpha invoice parser thing", "-k", "3")
+    check("query without embedder: lexical fallback, no crash",
+          r.returncode == 0 and "proj/alpha" in r.stdout.split("\t")[0], r.stderr[-150:] + r.stdout[:80])
+    before_db = db.read_bytes()
+    r = run_cli(dead, "reindex")
+    check("reindex without embedder: refuses, index untouched",
+          r.returncode == 0 and "unreachable" in r.stdout and db.read_bytes() == before_db,
+          r.stdout[-150:])
+    r = run_cli(dead, "learn", "offline pin", "proj/alpha/main.md")
+    check("learn without embedder: ok (anchor stored, no embed call)", r.returncode == 0)
+    run_cli(dead, "unlearn", "offline pin", "proj/alpha/main.md")
+
+    # --- learn() normalizes absolute paths (pin must match ranked relative paths)
+    r = run_cli(cfg, "learn", "absolute path pin", str(vault / "proj/alpha/main.md"))
+    absrow = [x for x in learned_rows() if x["qtext"] == "absolute path pin"]
+    check("learn stores relative path for absolute input",
+          r.returncode == 0 and absrow and absrow[0]["path"] == "proj/alpha/main.md",
+          json.dumps(absrow)[:150])
+    run_cli(cfg, "unlearn", "absolute path pin", "proj/alpha/main.md")
+
+    # --- pick-encoder must not rewrite real pins through its throwaway reindex
+    # (stale pin present while the A/B runs: learned.json must be unchanged)
+    stale_before = (tmp / "learned.json").read_text()
+    run_cli(cfg, "pick-encoder", EMBD, "--pairs", str(tmp / "pick-pairs.json"))
+    check("pick-encoder dry run leaves pins untouched", (tmp / "learned.json").read_text() == stale_before)
+
+    # --- clusters enabled + embedder down must not crash (cluster_boost q=None)
+    clcfg = tmp / "clusters.toml"
+    clcfg.write_text(cfg.read_text() + '\n[clusters]\nenable = true\nweight = 0.001\n')
+    r = run_cli(clcfg, "reindex")
+    check("clusters: reindex with clusters enabled ok", r.returncode == 0, r.stderr[-150:])
+    cldead = tmp / "clusters-dead.toml"
+    cldead.write_text(clcfg.read_text().replace("8082/v1/embeddings", "59997/v1/embeddings"))
+    r = run_cli(cldead, "query", "alpha invoice parser thing", "-k", "3")
+    check("clusters + no embedder: no crash", r.returncode == 0, r.stderr[-200:])
+
+    # --- API /query logs events (temporal asked-before needs the agent's path)
+    # (checked after the API block below via CLI recent)
+
     # --- audit
     r = run_cli(cfg, "audit")
     check("audit passes its own pairs", r.returncode == 0 and "2/2 qa.json" in r.stdout and "learned passed" in r.stdout,
@@ -315,6 +357,9 @@ qa_file = "{tmp / 'qa.json'}"
         check("api /review empty q -> 400", st == 400)
         st, body = post("/review", {"q": "teach traversal probe", "path": "../../etc/hostname"})
         check("api /review traversal blocked", st == 400 and "not a vault path" in body.get("error", ""), f"{st} {body}")
+        r = run_cli(cfg, "recent", "5", "query")
+        check("api /query logs events (temporal asked-before data)",
+              "alpha invoice parser thing" in r.stdout, r.stdout[:200])
     finally:
         api.terminate()
 
