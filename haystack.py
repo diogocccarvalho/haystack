@@ -231,9 +231,14 @@ def learn_lookup(con, text, paths, q, dense=None):
     boost = np.zeros(len(paths))
     for row, sim in zip(rows, sims):
         if sim > 0.60 and sim >= corpus_best + 0.01:
+            folder = row["path"].rsplit("/", 1)[0] if "/" in row["path"] else row["path"]
+            strength = 0.10 * sim * min(row["hits"], 3)
             for i, p in enumerate(paths):
-                if p == row["path"] or p.startswith(row["path"].rsplit("/", 1)[0]):
-                    boost[i] += 0.10 * sim * min(row["hits"], 3)
+                if p == row["path"] or p == folder:
+                    boost[i] += strength  # exact target (file or folder pin)
+                elif p.startswith(folder + "/"):
+                    boost[i] += strength / 2  # folder fallback: strictly weaker,
+                    # else a pin in a busy folder can't outrank its own siblings
     return boost
 
 
@@ -246,6 +251,52 @@ def connect():
     con.execute("CREATE TABLE IF NOT EXISTS files(path TEXT, mtime REAL, hash TEXT)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_c ON chunks(path)")
     return con
+
+
+def reanchor(con, moved=False):
+    """Stale-pin repair (reidmarlow's edge case): a pin whose target path left
+    the index (rename/move) is re-anchored onto the same note instead of
+    surfacing a dead path. Identity check order: unique content-hash match
+    (free, exact — catches rename-only moves) -> semantic match of the stored
+    title anchor against current title chunks (survives edits too), gated by
+    the scale-free margin: best title hit must clear 0.60 AND beat the
+    runner-up by 0.05. Semantics only run when THIS reindex saw a plausible
+    move (files added AND removed together) — a deletion-only pass must never
+    re-anchor, or a near-duplicate decoy file silently inherits the pin. No
+    confident match = pin stays stale and audit keeps flagging it — a wrong
+    auto-reanchor lies, a stale pin fails loudly."""
+    if not moved:
+        return
+    rows = _load_learned()
+    live = {r[0]: r[1] for r in con.execute("SELECT path, hash FROM files")}
+    titles = list(con.execute("SELECT path, text FROM chunks WHERE heading='(title)'"))
+    changed = 0
+    for row in rows:
+        old = row.get("path", "")
+        if old in live or not (row.get("hash") or row.get("anchor")):
+            continue  # healthy pin, folder pin, or legacy row without anchors
+        new_path = None
+        if row.get("hash"):
+            hits = [lp for lp, lh in live.items() if lh == row["hash"]]
+            if len(hits) == 1:
+                new_path = hits[0]
+        if new_path is None and row.get("anchor") and titles:
+            av = embed([row["anchor"]])[0]
+            tv = embed([t for _, t in titles])
+            sims = tv @ av
+            order = np.argsort(-sims)
+            best = float(sims[order[0]])
+            second = float(sims[order[1]]) if len(order) > 1 else 0.0
+            if best > 0.60 and (len(order) == 1 or best - second >= 0.05):
+                new_path = titles[int(order[0])][0]
+        if new_path and new_path != old:
+            row.setdefault("history", []).append(old)
+            row["path"] = new_path
+            changed += 1
+            log_edit("reanchor", f"{old} -> {new_path}")
+    if changed:
+        LEARNED_FILE.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
+        print(f"reanchored {changed} stale pin(s) (see {LOG_DIR.name}/notes-editor.log)")
 
 
 def reindex(con):
@@ -277,6 +328,7 @@ def reindex(con):
         cur.execute("DELETE FROM files WHERE path=?", (rel,))
         n_del += 1
     con.commit()
+    reanchor(con, moved=(n_new > 0 and n_del > 0))
     print(f"indexed: {n_new} updated, {n_del} removed, {sum(1 for _ in walk())} files")
 
 
@@ -533,13 +585,22 @@ def learn(con, qtext, path, commit=True):
             sys.exit(f"{path}: not a vault path")
     if not (rp.is_file() or rp.is_dir()):
         sys.exit(f"{path}: not a vault path")
+    # Identity snapshot for stale-pin re-anchoring: content hash (rename-only
+    # moves) + title anchor text (semantic fallback that survives edits).
+    fhash = fanchor = None
+    if rp.is_file():
+        fhash = hashlib.sha256(rp.read_bytes()).hexdigest()[:16]
+        cs = chunks_of(rp)
+        if cs and cs[0][0] == "(title)" and cs[0][1].strip():
+            fanchor = cs[0][1]
     rows = _load_learned()
     for row in rows:
         if row["qtext"] == qtext and row["path"] == path:
             row["hits"] = min(row["hits"] + 1, 3)
             break
     else:
-        rows.append({"qtext": qtext, "path": path, "hits": 1})
+        rows.append({"qtext": qtext, "path": path, "hits": 1,
+                     "hash": fhash, "anchor": fanchor})
     LEARNED_FILE.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     log_edit("learn", f"{qtext[:60]} -> {path}")
     print(f"learned: {qtext[:60]!r} -> {path}")

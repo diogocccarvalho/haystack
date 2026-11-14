@@ -185,6 +185,58 @@ qa_file = "{tmp / 'qa.json'}"
     check("query emoji-only no crash", r.returncode == 0)
     r = run_cli(cfg, "aliases")
     check("aliases after weird corpus no crash", r.returncode == 0)
+    # --- stale-pin re-anchoring (reidmarlow edge case): rename/move taught targets
+    def learned_rows():
+        return json.loads((tmp / "learned.json").read_text())
+
+    # dedicated target so other pins/qa pairs stay untouched
+    (vault / "misc/movable.md").write_text(
+        '---\ntitle: "Gamma wallet"\ndate: 2026-11-13\n---\n# Gamma\n\n## Ledger\nwallet ledger entries\n')
+    run_cli(cfg, "reindex")
+    # fuzzy pin: only the pin carries this query (dense can't find it alone)
+    r = run_cli(cfg, "learn", "where is my money thing", "misc/movable.md")
+    check("learn stores anchor fields", "hash" in learned_rows()[-1] and learned_rows()[-1]["anchor"],
+          json.dumps(learned_rows()[-1])[:120])
+    check("pin-driven hit before move", top1("where is my money thing") == "misc/movable.md",
+          top1("where is my money thing"))
+    # rename-only: hash re-anchor path
+    (vault / "misc/movable.md").rename(vault / "misc/movable-renamed.md")
+    run_cli(cfg, "reindex")
+    check("reanchored after rename", top1("where is my money thing") == "misc/movable-renamed.md",
+          top1("where is my money thing"))
+    check("rename keeps history", learned_rows()[-1]["history"] == ["misc/movable.md"],
+          json.dumps(learned_rows()[-1])[:150])
+    # cross-dir move, THEN edit (hash mismatch -> semantic fallback must carry it)
+    (vault / "misc/movable-renamed.md").rename(vault / "proj/movable-moved.md")
+    (vault / "proj/movable-moved.md").write_text(
+        '---\ntitle: "Gamma wallet"\ndate: 2026-11-13\n---\n# Gamma\n\n## Ledger\nwallet ledger, edited after move\n')
+    run_cli(cfg, "reindex")
+    check("reanchored after move+edit (semantic)", top1("where is my money thing") == "proj/movable-moved.md",
+          top1("where is my money thing"))
+    check("history accumulates", learned_rows()[-1]["history"] == ["misc/movable.md", "misc/movable-renamed.md"],
+          json.dumps(learned_rows()[-1])[:200])
+    # deleted target stays stale EVEN with a near-duplicate decoy present:
+    # a deletion-only pass must not re-anchor (decoy would inherit the pin)
+    (vault / "misc/decoy.md").write_text(
+        '---\ntitle: "Gamma wallet copy"\ndate: 2026-11-13\n---\n# Gamma\n\n## Ledger\nwallet ledger entries (near-duplicate decoy)\n')
+    run_cli(cfg, "reindex")  # decoy exists while original still live
+    ghost2 = [r0 for r0 in learned_rows() if r0["qtext"] == "where is my money thing"][0]
+    check("decoy coexistence doesn't move pin", ghost2["path"] == "proj/movable-moved.md",
+          json.dumps(ghost2)[:150])
+    (vault / "proj/movable-moved.md").unlink()  # delete ONLY the pinned file
+    run_cli(cfg, "reindex")
+    ghost = [r0 for r0 in learned_rows() if r0["qtext"] == "where is my money thing"][0]
+    check("deleted target stays stale (no wrong auto-fix)", ghost["path"] == "proj/movable-moved.md",
+          json.dumps(ghost)[:150])
+    # legacy rows without anchor fields must not crash reanchor
+    legacy = learned_rows()
+    legacy.append({"qtext": "legacy pin", "path": "misc/long-gone.md", "hits": 1})
+    (tmp / "learned.json").write_text(json.dumps(legacy))
+    r = run_cli(cfg, "reindex")
+    check("reanchor skips legacy rows cleanly", r.returncode == 0, r.stderr[-150:])
+    run_cli(cfg, "unlearn", "where is my money thing", "proj/movable-moved.md")
+    run_cli(cfg, "unlearn", "legacy pin", "misc/long-gone.md")
+
     # --- audit
     r = run_cli(cfg, "audit")
     check("audit passes its own pairs", r.returncode == 0 and "2/2 qa.json" in r.stdout and "learned passed" in r.stdout,
