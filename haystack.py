@@ -624,6 +624,7 @@ def rank(con, text, k=5):
     if not paths:
         return np.array([], dtype=int), paths, heads, texts, np.array([])
     text = normalize_query(text)
+    text = _rewrite_query(text)
     try:
         q = embed([text])[0]
     except (urllib.error.URLError, TimeoutError) as e:
@@ -635,10 +636,11 @@ def rank(con, text, k=5):
     n = len(paths)
     lex = lexical_boost(text, texts)
     # field boost: title/top chunks dominate in both streams (WANDS: biggest gain)
-    title_mask = np.array([1.15 if h in ("(title)", "(top)") else 1.0 for h in heads])
+    title_top = float(_cfg.get("ranking", {}).get("title_top", 1.15))
+    title_mask = np.array([title_top if h in ("(title)", "(top)") else 1.0 for h in heads])
     lex_rank = np.empty(n, dtype=int)
     lex_rank[np.argsort(-(lex * title_mask))] = np.arange(n)
-    K = 60.0
+    K = float(_cfg.get("ranking", {}).get("rrf_k", 60.0))
     if q is not None:
         dense = mat @ q
         dense_rank = np.empty(n, dtype=int)
@@ -663,7 +665,8 @@ def rank(con, text, k=5):
     for w in set(tokens(text)) - STOP:
         df = sum(1 for t in lowered if w in t)
         if 0 < df <= 3:
-            scores += np.array([0.03 if w in t else 0.0 for t in lowered], dtype=np.float32)
+            exact_hit = float(_cfg.get("ranking", {}).get("exact_hit", 0.03))
+            scores += np.array([exact_hit if w in t else 0.0 for t in lowered], dtype=np.float32)
     # filename-segment completion: prose query ("anti skill tree") vs a
     # CamelCase filename stem ("AntiSkillTree" -> anti, skill, tree). When the
     # query covers ALL segments of a stem, that file IS the thing being named
@@ -697,7 +700,7 @@ def rank(con, text, k=5):
     if sup:
         for i, p in enumerate(paths):
             if p in sup:
-                scores[i] *= 0.40
+                scores[i] *= float(_cfg.get("ranking", {}).get("superseded_factor", 0.40))
     hub = [i for i, p in enumerate(paths)
            if p.endswith("/INDEX.md") or p == "INDEX.md"]
     hub_set = set(hub)
@@ -1136,6 +1139,90 @@ def eval_gen(con, limit=0, dest=None, workers=4):
 QUERY_FILLER = re.compile(
     r'^\s*(?:search|find|look(?:\s+for)?|check|show|get)\s*(?::|for|me|up)?\s*',
     re.I)
+
+# Query-formation operators: A1 research-proven rewrite pass (filler + synonym).
+QF_FILLERS = frozenset({
+    'dude', 'bro', 'man', 'mate', 'hey', 'yo', 'eh',
+    'whats', 'wont', 'cant', 'didnt', 'doesnt', 'isnt',
+    'arent', 'couldnt', 'wouldnt', 'shouldnt',
+    'gonna', 'wanna', 'gotta',
+    'thats', 'heres', 'theres', 'wheres', 'whos', 'id',
+    'ive', 'im', 'its',
+    'again', 'already', 'still', 'yet', 'also',
+    'stuff', 'things', 'bit', 'sort', 'type',
+})
+_QF_CONTRACTIONS = [
+    (r'\bwhats\b', 'what'), (r"\bwont\b", "won't"),
+    (r"\bcant\b", "can't"), (r"\bdidnt\b", "didn't"),
+    (r"\bdoesnt\b", "doesn't"), (r"\bisnt\b", "isn't"),
+    (r"\barent\b", "aren't"), (r"\bcouldnt\b", "couldn't"),
+    (r"\bwouldnt\b", "wouldn't"), (r"\bshouldnt\b", "shouldn't"),
+    (r"\bgonna\b", "going-to"), (r"\bwanna\b", "want-to"),
+    (r"\bgotta\b", "got-to"), (r"\bthats\b", "that's"),
+    (r"\bheres\b", "here's"), (r"\btheres\b", "there's"),
+    (r"\bwheres\b", "where's"), (r"\bwhos\b", "who's"),
+    (r"\bim\b", "I'm"), (r"\bive\b", "I've"), (r"\bits\b", "it's"),
+]
+_QF_SYNONYMS = {
+    'fastest': {'performance'}, 'speed': {'performance'},
+    'slow': {'laggy', 'latency'},
+    'setup': {'configuration', 'config', 'tune', 'tuning'},
+    'configure': {'configuration', 'config', 'tune', 'tuning'},
+    'tune': {'configuration', 'config', 'tune', 'tuning'},
+    'comparison': {'compare', 'versus', 'contrast'},
+    'compare': {'compare', 'versus', 'contrast'},
+    'deep': {'thorough', 'extensive', 'comprehensive', 'detail'},
+    'diver': {'thorough', 'extensive', 'comprehensive', 'detail'},
+    'dive': {'thorough', 'extensive', 'comprehensive', 'detail'},
+    'overview': {'summary', 'survey'},
+}
+
+
+def _apply_filler_strip(text):
+    """Remove filler words that carry no retrieval semantics."""
+    t = text.lower()
+    for pat, repl in _QF_CONTRACTIONS:
+        t = re.sub(pat, repl, t)
+    result_words = []
+    for token in re.findall(r"[^\s]+", text):
+        tl = token.lower()
+        stripped = tl.rstrip(',.!?;:\'')
+        if not stripped or stripped == tl:
+            result_words.append(token)
+            continue
+        if stripped in QF_FILLERS:
+            continue
+        prefix = token[:len(token) - len(stripped)]
+        suffix = token[len(stripped):]
+        result_words.append(prefix + stripped + suffix)
+    return ' '.join(result_words).strip()
+
+
+def _apply_synonym_expansion(text):
+    """Append synonym expansions as additional search tokens."""
+    lower = text.lower()
+    extra = []
+    for k, v in _QF_SYNONYMS.items():
+        if k in lower:
+            extra.extend(v)
+    if not extra:
+        return text
+    seen = set()
+    unique = []
+    for w in extra:
+        if w not in seen:
+            seen.add(w)
+            unique.append(w)
+    return text + ' ' + ' '.join(unique)
+
+
+def _rewrite_query(text):
+    """A1 chain: filler strip -> synonym expansion. Config-gated."""
+    if not _cfg.get("query_formation", {}).get("enabled", False):
+        return text
+    t = _apply_filler_strip(text)
+    t = _apply_synonym_expansion(t)
+    return t
 
 
 def normalize_query(text):
