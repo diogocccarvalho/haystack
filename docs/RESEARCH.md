@@ -375,3 +375,16 @@ reusable gate for the remaining parameter crystals (lookup threshold, chunk
 windows, temporal weights). Sweep discipline note: `query()` returns
 (top_indices, paths) — rank by paths[i] for i in top; stale pairs filtered by
 target existence; wv=0.5 is the budget corner (-0.03 MRR, -15% latency).
+
+## A1 verdict (2026-11-16): fusion 0.8 promotion REVERTED
+
+Hard adversarial pair set (scripts/hard_pairs.json, 16 human-style queries
+written from the user's phrasing habits, NOT from target wording):
+wv=0.7 R@3 0.813 / MRR 0.8125  vs  wv=0.8 R@3 0.750 / MRR 0.7500.
+The +2.0pp MRR on qa_gen did NOT transfer - LLM-generated-from-target pairs
+overfit the surface forms. Config reverted to 0.7 (gates green: eval 0.935,
+audit 22/22, sim 78/78). Sweep law added: NO policy promotion without passing
+scripts/hard_pairs.json as the held-out second gate; saturated sets (audit
+qa.json, 1.0/1.0) cannot discriminate. Side finding: the distro-research
+cluster fails on BOTH weights for nickname-style queries ('fastest setup for
+this laptop') - real retrieval weakness, next breakdown target.

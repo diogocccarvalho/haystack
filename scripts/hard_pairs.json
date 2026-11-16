@@ -1,0 +1,21 @@
+{
+  "comment": "Hard adversarial pairs, human-style. Queries written from the user's phrasing habits (colloquial, PT-flavored, nickname-heavy, multi-word intent), NOT derived from target note wording. Used to test whether qa_gen-measured policy gains transfer. n=16.",
+  "pairs": [
+    ["dude whats the fastest setup for this laptop again", "work/research/distro-alt-NEXT-STEPS.md"],
+    ["that distro comparison thing, the v2 deep dive", "work/research/distro-alt-v2-cli-desktop.md"],
+    ["kitty terminal annoyances i noted", "hobbies/research/terminal-setup.md"],
+    ["where was the sf brain wiring step", "hobbies/projects/street-fighter-ai/street-fighter-ai.md"],
+    ["the anti skill thing first run notes", "hobbies/projects/street-fighter-ai/design/AntiSkillTree.md"],
+    ["how much did hermes cost me last month", "hermes/cost-breakdown.md"],
+    ["the research about spending less on tokens", "hermes/cost-reduction-research.md"],
+    ["qual e o estado da migracao do logseq", "hermes/logseq-db-migration.md"],
+    ["loqseq db mcp servers worth using?", "work/research/logseq-db-mcp.md"],
+    ["vpn and logging stuff from that tranquilidade session", "work/projects/tranquilidade-eai/tranquilidade-eai-notes.md"],
+    ["the screener idea, where do i get free data", "hobbies/projects/market-screener/research/free-data-sources.md"],
+    ["what stuff did i save for the day trading edge", "hobbies/projects/market-screener/research/day-trading/intraday-stock-factors.md"],
+    ["the election thing with bruno, plan", "hobbies/projects/electoral-platform.md"],
+    ["wake word training, did i ever look into it", "hermes/wake-word-training.md"],
+    ["cleanup list before pushing the github profile", "career/notes/github-cleanup.md"],
+    ["linkedin text fixes i prepared", "career/notes/linkedin-updates.md"]
+  ]
+}
