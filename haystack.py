@@ -99,6 +99,19 @@ def embed_resilient(texts):
         return np.vstack([v1, v2]), k1 + k2
 
 
+def pdf_text(path):
+    """Extract text via pdftotext (poppler, preinstalled): one section per
+    page, form-feeds as separators. Index-only format: the deterministic
+    editor stays markdown-only."""
+    import subprocess
+    r = subprocess.run(["pdftotext", "-layout", str(path), "-"],
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        return []
+    pages = r.stdout.split("\f")
+    return [(f"Page {i+1}", pg) for i, pg in enumerate(pages) if pg.strip()]
+
+
 def chunks_of(path, rel=None):
     """[(heading, text)] per file: title blob + one chunk per ## section.
 
@@ -106,12 +119,19 @@ def chunks_of(path, rel=None):
     (poor-man's contextual retrieval: arXiv 2504.19754 found context-enriched
     chunks + BM25-over-context beat plain chunks; this gives BM25/IDF and the
     dense model the document identity in every chunk)."""
-    t = path.read_text(errors="replace")
-    lines = t.split("\n")
-    title_blob = []
-    for ln in lines[:10]:
-        if ln.startswith(("title:", "# ")) and len(ln) > 4:
-            title_blob.append(ln)
+    if path.suffix == ".pdf":
+        secs = pdf_text(path)
+        stem = path.stem
+        t = "\n".join(f"## {h}\n{txt}" for h, txt in secs)
+        lines = t.split("\n")
+        title_blob = [f'title: "{stem}"']
+    else:
+        t = path.read_text(errors="replace")
+        lines = t.split("\n")
+        title_blob = []
+        for ln in lines[:10]:
+            if ln.startswith(("title:", "# ")) and len(ln) > 4:
+                title_blob.append(ln)
     title_blob_text = "\n".join(title_blob or lines[:3])
     rel = rel or path.name
     ctx = f"[doc: {rel} | {title_blob_text.splitlines()[0] if title_blob_text else ''}]"
@@ -186,13 +206,16 @@ def rel_of(p):
         return "external/" + p.name
 
 
+INDEXABLE_EXTS = (".md", ".pdf")
+
+
 def walk():
     for p in EXTERNAL:
         if p.exists():
             yield p
-    for p in sorted(VAULT.rglob("*.md")):
-        if not p.is_file():  # a directory named "x.md" would crash chunks_of
-            continue
+    for p in sorted(VAULT.rglob("*")):
+        if p.suffix not in INDEXABLE_EXTS or not p.is_file():
+            continue  # a directory named "x.md" would crash chunks_of
         rel = str(p.relative_to(VAULT))
         if rel in SKIP_FILES or any(part in rel for part in SKIP_PARTS):
             continue
@@ -263,6 +286,10 @@ def connect():
     con.execute("""CREATE TABLE IF NOT EXISTS chunks(
         path TEXT, heading TEXT, hash TEXT, vec BLOB, text TEXT)""")
     con.execute("CREATE TABLE IF NOT EXISTS files(path TEXT, mtime REAL, hash TEXT)")
+    try:
+        con.execute("ALTER TABLE files ADD COLUMN superseded_by TEXT")
+    except sqlite3.OperationalError:
+        pass  # column exists (pre-2026-11-15 DBs)
     con.execute("CREATE TABLE IF NOT EXISTS events(ts REAL, op TEXT, path TEXT, text TEXT)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_c ON chunks(path)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_e ON events(ts)")
@@ -411,7 +438,9 @@ def reindex(con):
                 head, txt = cs[i]
                 cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
                             (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
-        cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
+        m = re.search(r"^superseded_by:\s*(\S+)", raw.decode("utf-8", "replace"), re.M)
+        cur.execute("INSERT INTO files VALUES(?,?,?,?)",
+                    (rel, p.stat().st_mtime, h, m.group(1) if m else None))
         n_new += 1
     for rel in set(db_files) - seen:
         cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
@@ -498,10 +527,23 @@ if "urllib.request" not in sys.modules:
     import urllib.error
 
 
+def tokens(text):
+    """Lexical tokens incl. CamelCase segments: 'AntiSkillTree' also yields
+    anti/skill/tree so prose queries ('anti skill tree') can lexically match
+    identifier-style titles (probe 2026-11-15: title ranked 3rd, parts
+    invisible to \\w+ tokenization)."""
+    out = re.findall(r"\w{4,}", text.lower())
+    for w in re.findall(r"[A-Z]?[a-z]{3,}|[A-Z]{3,}(?![a-z])", text):
+        lw = w.lower()
+        if lw not in out and len(lw) >= 4 and not any(lw in o or o in lw for o in out):
+            out.append(lw)
+    return out
+
+
 def lexical_boost(text, texts):
     lowered = [t.lower() for t in texts]
     n = len(texts)
-    raw = re.findall(r"\w{4,}", text.lower())
+    raw = tokens(text)
     if n >= 50:
         # learned stopwording: words present in most of the corpus are
         # non-discriminative in ANY language (IDF floor, replaces the
@@ -581,6 +623,7 @@ def rank(con, text, k=5):
     paths, heads, mat, texts = load_all(con)
     if not paths:
         return np.array([], dtype=int), paths, heads, texts, np.array([])
+    text = normalize_query(text)
     try:
         q = embed([text])[0]
     except (urllib.error.URLError, TimeoutError) as e:
@@ -606,29 +649,65 @@ def rank(con, text, k=5):
         scores = (1.0 / (K + lex_rank + 1)).astype(np.float32)
     # rare-token exact hit: identifiers win (financial-docs 2026: BM25 beats dense here)
     lowered = [t.lower() for t in texts]
-    for w in set(re.findall(r"\w{4,}", text.lower())) - STOP:
+    for w in set(tokens(text)) - STOP:
         df = sum(1 for t in lowered if w in t)
         if 0 < df <= 3:
             scores += np.array([0.03 if w in t else 0.0 for t in lowered], dtype=np.float32)
+    # filename-segment completion: prose query ("anti skill tree") vs a
+    # CamelCase filename stem ("AntiSkillTree" -> anti, skill, tree). When the
+    # query covers ALL segments of a stem, that file IS the thing being named
+    # — probe 2026-11-15: it ranked 3rd behind sibling files sharing its
+    # substrings (identifier-bonus's substring match can't tell them apart).
+    qt = set(tokens(text))
+    if len(qt) >= 2:
+        for i, p in enumerate(paths):
+            stem = p.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            parts = [w.lower() for w in re.findall(r"[A-Z][a-z]{3,}|[A-Z]{3,}(?![a-z])", stem)]
+            if len(parts) >= 2 and all(w in qt for w in parts):
+                for j, h in enumerate(heads):
+                    if paths[j] == p and h in ("(title)", "(top)"):
+                        scores[j] += 0.04
     lboost = learn_lookup(con, text, paths, q, dense=dense)
     scores += lboost  # additive post-fusion
     scores += temporal_boost(con, text, paths)
     scores += cluster_boost(con, paths, q)
     # INDEX.md files are pointer hubs; the note they point to is the content.
     # Small demotion (NOT removal) so hub files stop outranking their targets.
-    for i, p in enumerate(paths):
-        if p.endswith("/INDEX.md") or p == "INDEX.md":
+    # Hub (INDEX.md) demotion as a TIE-BREAKER, not a rule: hubs mention
+    # everything, so demote one only when a content chunk is competitive
+    # (within the same 0.92 factor). A hub that stays clearly dominant after
+    # no demotion is the semantic signal that the query asked FOR the hub —
+    # no query-string matching involved (regex v1 regressed the eval).
+    # superseded notes (frontmatter superseded_by:) are tombstones: kept
+    # retrievable (auditability) but heavily demoted — the replacement note
+    # must win. One multiply, deterministic, reversible by removing the line.
+    sup = {p for p, s in con.execute(
+        "SELECT path, superseded_by FROM files WHERE superseded_by IS NOT NULL")}
+    if sup:
+        for i, p in enumerate(paths):
+            if p in sup:
+                scores[i] *= 0.40
+    hub = [i for i, p in enumerate(paths)
+           if p.endswith("/INDEX.md") or p == "INDEX.md"]
+    hub_set = set(hub)
+    best_content = max((scores[i] for i in range(len(paths)) if i not in hub_set),
+                       default=0.0)
+    dominant_hubs = set()
+    for i in hub:
+        if best_content < 0.92 * scores[i]:
+            dominant_hubs.add(i)
+        else:
             scores[i] *= 0.92
     order = list(np.argsort(-scores))
     # teacher beats model: user-taught paths survive the cross-encoder's reordering
     # (pinned must be score-ordered or the "best" correction is a random chunk)
     pinned = sorted((i for i in range(len(paths)) if lboost[i] > 0), key=lambda i: -scores[i])
-    order = rerank(con, text, order, texts, pinned=pinned, paths_rel=paths)
+    order = rerank(con, text, order, texts, pinned=pinned, paths_rel=paths, allow_hub=dominant_hubs)
     top = order[:k]
     return top, paths, heads, texts, scores
 
 
-def rerank(con, text, order, texts, pinned=(), paths_rel=()):
+def rerank(con, text, order, texts, pinned=(), paths_rel=(), allow_hub=()):
     """Cross-encoder rerank of the fused top (T2-RAGBench: Recall@5
     0.695 -> 0.816). Optional [rerank] url/model/top in config; the reranker
     only REORDERS (fusion scores stay the reported scores), and learned
@@ -646,7 +725,8 @@ def rerank(con, text, order, texts, pinned=(), paths_rel=()):
     # highly on name-recognition alone — excluded from candidates (R5: the
     # content file they point to must be the answer)
     cand = [i for i in order[:topn * 2]
-            if not paths_rel[i].endswith("INDEX.md") or paths_rel[i].count("/") == 0][:topn] if paths_rel else order[:topn]
+            if i in allow_hub or not paths_rel[i].endswith("INDEX.md")
+            or paths_rel[i].count("/") == 0][:topn] if paths_rel else order[:topn]
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/rerank",
@@ -687,6 +767,57 @@ def recent(con, n=20, op=""):
         print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}\t{o}\t{p}\t{t}")
 
 
+def conflicts(con, top=25, min_sim=0.80, verify=False):
+    """Offline conflict-scan (report-only): same-topic chunk pairs across
+    DIFFERENT files. Cosine pairing is necessary but insufficient — prior art
+    (MemStrata 2025) shows similarity alone cannot separate contradictions
+    from duplicates (AUROC ~0.59), and ContraDoc (NAACL 2024) shows
+    contradicting passages often share zero content words. So this SHIPS
+    CANDIDATES for human review; it never auto-judges. Resolution convention:
+    edit the losing note or tombstone it with superseded_by frontmatter
+    (one-truth-per-fact rule); superseded notes are demoted at rank time.
+    --verify adds an offline d1 opinion per pair (--verify N caps it).
+    Opinions are UNSCORED until the judge is benchmarked against hand labels
+    (docs/surveys/eval-feedback-contradiction-survey.md)."""
+    paths, heads, mat, texts = load_all(con)
+    n = len(paths)
+    if n < 2:
+        print("nothing indexed")
+        return
+    sims = mat @ mat.T
+    iu, ju = np.triu_indices(n, k=1)
+    s = sims[iu, ju]
+    keep = (s >= min_sim) & (s < 0.97)
+    iu, ju, s = iu[keep], ju[keep], s[keep]
+    best = {}
+    for a, b, v in zip(iu, ju, s):
+        pa, pb = paths[a], paths[b]
+        if pa == pb:
+            continue
+        key = tuple(sorted((pa, pb)))
+        if key not in best or v > best[key][0]:
+            best[key] = (v, a if pa < pb else b, b if pa < pb else a)
+    ranked = sorted(best.values(), reverse=True)[:top]
+    if not ranked:
+        print(f"no cross-file pairs above {min_sim} similarity — nothing to review")
+        return
+    print(f"{len(ranked)} candidate pair(s) (cross-file, sim {min_sim}-0.97) — REVIEW, not verdicts:")
+    for v, a, b in ranked:
+        print(f"\n[{v:.3f}] {paths[a]}  #{heads[a]}")
+        print(f"        {paths[b]}  #{heads[b]}")
+        print(f"  A: {re.sub(chr(92) + 's+', ' ', str(texts[a])[:140])}")
+        print(f"  B: {re.sub(chr(92) + 's+', ' ', str(texts[b])[:140])}")
+        if verify:
+            verdict = _llm(
+                "Two note excerpts from the same knowledge base. Do they "
+                "CONTRADICT each other, DUPLICATE each other, or are they "
+                "complementary/neutral? Answer with exactly one word: "
+                "CONTRADICT, DUPLICATE, or NEUTRAL.\n\nA: "
+                + str(texts[a])[:600] + "\n\nB: " + str(texts[b])[:600],
+                max_tokens=128).strip().splitlines()[0][:20]
+            print(f"  d1 opinion (UNSCORED, benchmark pending): {verdict or 'no-response'}")
+
+
 def list_clusters(con):
     for cid, label, n in con.execute(
             """SELECT m.cid, m.label, COUNT(c.path) FROM cluster_meta m
@@ -723,7 +854,9 @@ def index_one(con, p):
         head, txt = cs[i]
         cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
                     (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
-        cur.execute("INSERT INTO files VALUES(?,?,?)", (rel, p.stat().st_mtime, h))
+        m = re.search(r"^superseded_by:\s*(\S+)", p.read_text(errors="replace"), re.M)
+        cur.execute("INSERT INTO files VALUES(?,?,?,?)",
+                    (rel, p.stat().st_mtime, h, m.group(1) if m else None))
     con.commit()
     log_event(con, "index", rel)  # bumps events rowid: invalidates load_all caches
 
@@ -930,8 +1063,19 @@ def _llm(prompt, max_tokens=200):
                     # wants the answer, not the chain of thought
                     "chat_template_kwargs": {"enable_thinking": False}}).encode(),
         {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.load(r)["choices"][0]["message"]["content"]
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            msg = json.load(r)["choices"][0]["message"]
+    except Exception:
+        return ""  # gen is best-effort: an empty file yields no pairs, not a crash
+    c = msg.get("content") or ""
+    if not c.strip():
+        # reasoning models can return the whole budget as reasoning_content
+        # with empty content: salvage a final-answer block if one exists
+        rc = msg.get("reasoning_content") or ""
+        m = re.search(r"(?:final answer|answer)[:\s]*(.+)", rc, re.I | re.S)
+        c = (m.group(1) if m else "").strip()
+    return c
 
 
 def eval_gen(con, limit=0, dest=None, workers=4):
@@ -978,18 +1122,64 @@ def eval_gen(con, limit=0, dest=None, workers=4):
     print(f"wrote {len(out)} synthetic pairs -> {gen_file}")
 
 
+QUERY_FILLER = re.compile(
+    r'^\s*(?:search|find|look(?:\s+for)?|check|show|get)\s*(?::|for|me|up)?\s*',
+    re.I)
+
+
+def normalize_query(text):
+    """Strip search-verb prefixes and quote marks: 'Search: "foo" bar' ->
+    'foo bar'. These tokens are query metadata, not content ('search' has
+    df=848 in this corpus — pure dilution in both streams)."""
+    t = text.replace('"', "").replace("\u201c", "").replace("\u201d", "")
+    for _ in range(2):
+        t2 = QUERY_FILLER.sub("", t)
+        if t2 == t:
+            break
+        t = t2
+    return t.strip() or text.strip()
+
+
+def stale_pair(con, qtext, expect, paths, texts):
+    """A pair is unanswerable when its target is gone or carries no lexical
+    evidence for the query (translation-only targets, renamed notes). Stale
+    pairs measure the eval, not the router — excluded and reported."""
+    if expect not in set(paths) or not (VAULT / expect).exists():
+        return "target-missing"
+    toks = set(re.findall(r"\w{4,}", qtext.lower())) - STOP
+    tgt = [t for p, t in zip(paths, texts) if p == expect]
+    ev = [w for w in toks if any(w in t.lower() for t in tgt)]
+    if len(toks) and not ev:
+        return "no-target-evidence"
+    return None
+
+
 def eval_pairs(con, pairs):
-    """R@3 + MRR for a pairs list. Shared by `eval` and `pick-encoder`."""
+    """R@3 + MRR for a pairs list. Shared by `eval` and `pick-encoder`.
+    Stale pairs (unanswerable) are excluded from the score and listed."""
+    all_paths, _, _, all_texts = load_all(con)
     recall = mrr = 0.0
+    scored = stale = 0
+    stale_list = []
     for qtext, expect in pairs:
-        top, paths = query(con, qtext, k=10)
-        ranked = [paths[i] for i in top]
+        why = stale_pair(con, qtext, expect, all_paths, all_texts)
+        if why:
+            stale += 1
+            stale_list.append(f"  [{why}] {qtext[:60]!r} -> {expect}")
+            continue
+        scored += 1
+        top, qpaths = query(con, qtext, k=10)
+        ranked = [qpaths[i] for i in top]
         for rank_i, p in enumerate(ranked[:3]):
             if p.startswith(expect) or p == expect:
                 recall += 1
                 mrr += 1.0 / (rank_i + 1)
                 break
-    n = max(1, len(pairs))
+    for line in stale_list:
+        print(line)
+    n = max(1, scored)
+    if stale:
+        print(f"  ({stale} stale pair(s) excluded — see above)")
     return recall / n, mrr / n
 
 
@@ -1159,6 +1349,9 @@ def main():
                                 "new-note", "cluster", "learn"):
             op = args[0]
         recent(con, n, op)
+    elif cmd == "conflicts":
+        verify = "--verify" in a
+        conflicts(con, verify=verify)
     elif cmd == "clusters":
         list_clusters(con)
     elif cmd == "find-file":

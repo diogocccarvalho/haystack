@@ -105,6 +105,42 @@ qa_file = "{tmp / 'qa.json'}"
     after = top1("the invoices thing")
     check("learn flips query to alpha", after.startswith("proj/alpha"), f"{before} -> {after}")
 
+    # --- superseded_by frontmatter demotes the losing note (one-truth rule)
+    (vault / "proj/alpha/old-fact.md").write_text(
+        '---\ntitle: "Old fact"\n---\n\n# Old\n\n## Fact\n- zephyrquartz unique marker v1\n')
+    (vault / "proj/alpha/new-fact.md").write_text(
+        '---\ntitle: "New fact"\n---\n\n# New\n\n## Fact\n- zephyrquartz unique marker v2\n')
+    run_cli(cfg, "reindex")
+    q = "zephyrquartz unique marker"
+    check("pre-supersede: ranking decides", top1(q).startswith("proj/alpha/"), top1(q))
+    run_cli(cfg, "frontmatter", "proj/alpha/old-fact.md", "superseded_by=proj/alpha/new-fact.md")
+    run_cli(cfg, "reindex")
+    check("superseded note loses to its replacement", top1(q).endswith("new-fact.md"), top1(q))
+
+    # --- conflicts scan surfaces cross-file near-dupes, report-only
+    (vault / "misc/dup-a.md").write_text(
+        '---\ntitle: "Dup A"\n---\n\n# A\n\n## Topic\n- wobblegate calibration notes shared\n')
+    (vault / "misc/dup-b.md").write_text(
+        '---\ntitle: "Dup B"\n---\n\n# B\n\n## Topic\n- wobblegate calibration notes shared twice\n')
+    run_cli(cfg, "reindex")
+    r = run_cli(cfg, "conflicts")
+    check("conflicts lists cross-file candidate pair",
+          r.returncode == 0 and "misc/dup-a.md" in r.stdout and "misc/dup-b.md" in r.stdout,
+          r.stdout[-200:])
+
+    # --- PDF files are indexable (pdftotext), editor stays md-only
+    pdf = (vault / "misc/fixture.pdf")
+    pdf.write_bytes(
+        b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+        b"4 0 obj<</Length 46>>stream\nBT /F1 12 Tf 72 720 Td (wobbletext gamma calibration fixture) Tj ET\nendstream\nendobj\n"
+        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+        b"trailer<</Root 1 0 R>>\n%%EOF\n")
+    run_cli(cfg, "reindex")
+    check("pdf indexed and retrievable", top1("wobbletext gamma calibration").endswith("fixture.pdf"),
+          top1("wobbletext gamma calibration"))
+
     # --- editor ops
     r = run_cli(cfg, "append", "proj/alpha/main.md", "Status", "line one")
     check("append ok", r.returncode == 0 and "running" in (vault / "proj/alpha/main.md").read_text())
@@ -262,6 +298,13 @@ qa_file = "{tmp / 'qa.json'}"
 
     # --- pick-encoder must not rewrite real pins through its throwaway reindex
     # (stale pin present while the A/B runs: learned.json must be unchanged)
+    # NOTE: the pairs file must exist BEFORE this call — a missing --pairs file
+    # silently falls back to LLM eval-gen (60s/call reasoning burn on a 1.7B)
+    # and blows run_cli's 120s timeout (latent 2026-11-13, exposed 2026-11-15).
+    (tmp / "pick-pairs.json").write_text(json.dumps({
+        "pairs": [["alpha invoice parser", "proj/alpha/main.md"],
+                  ["widget beta thing", "proj/beta/main.md"],
+                  ["kitty config sounds", "misc/plain.md"]]}))
     stale_before = (tmp / "learned.json").read_text()
     run_cli(cfg, "pick-encoder", EMBD, "--pairs", str(tmp / "pick-pairs.json"))
     check("pick-encoder dry run leaves pins untouched", (tmp / "learned.json").read_text() == stale_before)

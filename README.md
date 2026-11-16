@@ -135,6 +135,36 @@ db — e.g. llama.cpp questions answered from `~/src/llama.cpp/docs` directly.
 - [x] HTTP /review endpoint (headless two-call teach loop: list candidates,
       teach by n or path)
 - [x] Multilingual embedder path (granite-97m via ONNX, A/B'd)
+- [x] Eval hygiene: stale-pair guard (unanswerable pairs excluded and
+      listed, not silently scored) + abstention canaries + query
+      normalization (search-verb filler stripped) — Memorilla-informed, measured
+- [x] `superseded_by` frontmatter (one-truth rule): tombstoned notes stay
+      retrievable but lose to their replacement
+- [x] `conflicts` scan: offline cross-file near-dupe candidates for review
+      (ships candidates, never verdicts)
+- [x] CamelCase-aware lexical tokens + filename-segment completion
+      (prose queries can name identifier-style notes)
+
+## Credits & prior art
+
+Haystack borrows measured ideas from published work — credit where it's due:
+
+- **Memorilla: Latent Semantic Memory for LLMs** (Fallahpour, Idehpour,
+  Kothapalli, Mounier, Wu, Pardis, Leskovec — Stanford, arXiv:2610.21375).
+  Haystack takes the *opposite* corner of their design space (verbatim
+  auditable retrieval instead of latent compression), but their evaluation
+  shaped this codebase: the stale-eval-pair guard (`eval` now excludes
+  unanswerable pairs), query normalization (their question-type analysis —
+  conceptual vs. entity recall — motivated stripping search-verb filler from
+  queries), and the framing that selective small context can beat full
+  context on quality, not just cost (FactKG: 84.33% vs 80.43%).
+- **In-Context RALM** (Ram et al., 2023): most QA gains come from the first
+  1–2 retrieved documents — the reason `k` stays small.
+- **RRF** (Cormack et al., 2009) and **WANDS** (field-boost findings) —
+  cited in-code where used.
+
+Haystack is not affiliated with, derived from, or distributed as part of any
+of these projects.
 
 ## Featured in
 
