@@ -643,7 +643,18 @@ def rank(con, text, k=5):
         dense = mat @ q
         dense_rank = np.empty(n, dtype=int)
         dense_rank[np.argsort(-(dense * title_mask))] = np.arange(n)
-        scores = (0.7 / (K + dense_rank + 1) + 0.3 / (K + lex_rank + 1)).astype(np.float32)
+        wv = float(_cfg.get("fusion", {}).get("dense_weight", 0.7))
+        if _cfg.get("fusion", {}).get("adaptive_idf", False):
+            # vstash Feb 2026: rare-term queries lean lexical, common-vocab lean dense
+            dfs = []
+            lowered_q = [t.lower() for t in texts]
+            for w in set(tokens(text)) - STOP:
+                dfs.append(sum(1 for t in lowered_q if w in t))
+            if dfs:
+                mean_df = sum(dfs) / len(dfs)
+                wv = 1.0 / (1.0 + math.exp(-(mean_df - 3.0)))
+                wv = min(max(wv, 0.2), 0.9)
+        scores = (wv / (K + dense_rank + 1) + (1.0 - wv) / (K + lex_rank + 1)).astype(np.float32)
     else:
         dense = None
         scores = (1.0 / (K + lex_rank + 1)).astype(np.float32)
