@@ -452,3 +452,17 @@ Derived from the specific failure cases:
   overview -> summary/survey
   slow -> laggy/latency
 
+
+## A2 verification note (parent session, 2026-11-16): rewrite does NOT generalize yet
+
+Fresh held-out check: 3 new nickname queries ("that thing about the hermes
+token costs again", "the keyboard thing i noted for the sf project", "how
+do i get the vpn goin on this machine again") - raw vs rewritten top-5
+IDENTICAL in all 3. The hard-pairs gain (+0.062 = exactly 1/16) is the
+designed pair: the synonym map was seeded from that failure, so hard_pairs
+was not held-out for it (I2 law). KEPT because: zero eval regression, zero
+fresh regression, and it fixes the known distro vocabulary genuinely.
+Verdict: shipped-but-narrow. The nickname-query CLASS is still open - the
+real fix is identity resolution (alias -> canonical concept), not more
+synonyms. Side observation: several fresh queries returned the same path
+5x in top-5 (dedup gap in snippet->path mapping) - separate bug, logged.
