@@ -466,3 +466,18 @@ Verdict: shipped-but-narrow. The nickname-query CLASS is still open - the
 real fix is identity resolution (alias -> canonical concept), not more
 synonyms. Side observation: several fresh queries returned the same path
 5x in top-5 (dedup gap in snippet->path mapping) - separate bug, logged.
+
+## C-sweeps verification note (parent session, 2026-11-16): promotion REVERTED
+
+The C-sweep agent promoted dw=0.8 + rrf_k=30 claiming hard MRR 0.8125 vs
+baseline 0.7083. Both numbers wrong: its baseline measurement was broken.
+Parent probe (same harness functions, both configs, both gates, rewrite
+chain on for both):
+- promoted (0.8/K30): QA 1.000/0.9667/198ms | HARD 0.875/0.8021
+- original (0.7/K60): QA 1.000/0.9567/216ms | HARD 0.875/0.8438
+Verdict: +0.010 eval, -0.042 held-out => REVERTED to 0.7/K60 (A1 law:
+held-out gate wins; this is the second time eval-only gains failed it).
+KEPT: the harness extension (reranker/K/superseded-factor sweeps) and the
+config-driven ranking params - the K sweep itself was informative (K=30
+helps eval but hurts hard). Gains from rewrite chain noted: hard baseline
+0.8438 now vs 0.8125 pre-A2.
