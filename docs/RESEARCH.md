@@ -362,3 +362,16 @@ retrieved — correctly.
 ## Measurement discipline (from MemDelta)
 Every adopted change must: reindex from scratch, run `audit` (8/8 baseline),
 run `tests/sim.py`, and report the QA pass rate delta. One variable per change.
+
+## Fusion weight policy crystal — PROMOTED (2026-11-16)
+Grid sweep (scripts/sweep_fusion.py, 55 qa pairs, harness reproduces `eval`
+baseline exactly): wv=0.8 dominates the 0.7 incumbent on all axes under
+min-of-3 — MRR 0.9567 vs 0.9367 (+2.0pp), best-latency 280.7ms vs 290.3ms,
+Recall@3 1.000 equal. Config [fusion] dense_weight promoted to 0.8; gates
+re-run green (sim 78/78, audit 8/8+14/14, eval MRR 0.935 -> 0.956).
+adaptive_idf measured WORSE on all three axes at this corpus size (0.980 R@3,
+0.9367 MRR, +30ms) — verdict recorded, not shipped. Sweep harness is the
+reusable gate for the remaining parameter crystals (lookup threshold, chunk
+windows, temporal weights). Sweep discipline note: `query()` returns
+(top_indices, paths) — rank by paths[i] for i in top; stale pairs filtered by
+target existence; wv=0.5 is the budget corner (-0.03 MRR, -15% latency).
