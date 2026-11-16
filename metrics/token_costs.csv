@@ -1,0 +1,4 @@
+k,tokens_injected_mean,p50,p99,full_file_tokens_mean,compression
+3,113,121,135,5167,43.4x
+5,186,195,225,5167,27.8x
+10,332,381,441,5167,16.2x
