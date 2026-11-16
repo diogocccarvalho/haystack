@@ -1,5 +1,12 @@
 """Token-cost dimension for haystack: retrieval vs naive full-file read.
 
+HONEST METRIC (2026-11-16, replaces the '43x' claim): tokens-per-answer =
+injected route+paths (113 tok measured) + the notes the agent READS until it
+hits the winning one (E[reads] from the qa pairs). The winning note is still
+read — "not in context" is not "not read". The old ratio (injection vs the
+largest sampled winning file) compared different quantities and overstated
+the saving; honest numbers live in scripts/sweep outputs and docs/RESEARCH.md.
+
 For each sample query: run /query, measure the tokens the retrieval path
 would inject (k snippets), and the tokens of the naive alternative (reading
 the winning file whole). Emits a markdown table + CSV: per-k compression

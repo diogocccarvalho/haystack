@@ -388,3 +388,18 @@ scripts/hard_pairs.json as the held-out second gate; saturated sets (audit
 qa.json, 1.0/1.0) cannot discriminate. Side finding: the distro-research
 cluster fails on BOTH weights for nickname-style queries ('fastest setup for
 this laptop') - real retrieval weakness, next breakdown target.
+
+## A4 verdict (2026-11-16): the 43x claim RETRACTED, honest metric adopted
+
+tokens-per-answer = 113 (route+paths injection, measured) + E[notes read
+until the winning one] = 113 + 2,652 = 2,765 tok over the 50 scoreable qa
+pairs (44 rank-1 hits; median read only 993 tok - rank-1 targets are usually
+small notes). Against the naive 're-read the full winning note' baseline the
+honest compression is 5167/2765 = ~1.9x (median-case 4.7x vs the 5,167
+outlier) - NOT 43x. The old ratio compared the injection against the largest
+sampled winning file: different quantities. What retrieval actually saves is
+the SEARCH (wrong-note reads, re-derivation, asking the user), which is
+unbounded and was never the 43x denominator. Honest claims only from now
+on: '113 tok of steering + median ~1k read per answer', and context-rot
+savings (not re-carrying turns) are the diamondhead side, measured
+separately.
