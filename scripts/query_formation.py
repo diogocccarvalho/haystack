@@ -106,6 +106,16 @@ def apply_synonym_expansion(text):
 # ops written by hand = miscop; the semantic-only redesign is in
 # diamondhead/research/p3-prior-art.md once the focused sweep lands.
 
+# ---------------------------------------------------------------------------
+# Chain registry: name -> list of operator functions
+# (frozen hand-rule incumbents = the baseline The Populist must beat)
+# ---------------------------------------------------------------------------
+CHAINS = {
+    'no_op': [],
+    'minimal': [apply_filler_strip],
+    'standard': [apply_filler_strip, apply_synonym_expansion],
+}
+
 
 def rewrite_query(text, chain_name='standard'):
     """Apply a named rewrite chain to query text."""
