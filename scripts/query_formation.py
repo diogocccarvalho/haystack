@@ -99,11 +99,12 @@ def apply_synonym_expansion(text):
 # ---------------------------------------------------------------------------
 # Chain registry: name -> list of operator functions
 # ---------------------------------------------------------------------------
-CHAINS = {
-    'no_op': [],
-    'minimal': [apply_filler_strip],
-    'standard': [apply_filler_strip, apply_synonym_expansion],
-}
+# NOTE (2026-11-17, Diogo's design principle): the Populist is SEMANTIC-ONLY.
+# No hand-authored regex ops or maps — everything semantic is discovered from
+# data (vault co-occurrence mining, call logs, correction tables) and frozen
+# only after measured promotion gates (DiamondHead crystallization). Regex
+# ops written by hand = miscop; the semantic-only redesign is in
+# diamondhead/research/p3-prior-art.md once the focused sweep lands.
 
 
 def rewrite_query(text, chain_name='standard'):
