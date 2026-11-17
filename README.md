@@ -144,6 +144,11 @@ db — e.g. llama.cpp questions answered from `~/src/llama.cpp/docs` directly.
       (ships candidates, never verdicts)
 - [x] CamelCase-aware lexical tokens + filename-segment completion
       (prose queries can name identifier-style notes)
+- [ ] Query-formation pass prototype (scripts/query_formation.py): a
+      deterministic rewrite-operator chain applied before `query()`. It is a
+      proto-layer of its own, not a haystack feature — it graduates to its
+      own project only if the GA-optimized chain beats the frozen hand rules
+      on the held-out hard-pairs eval; otherwise it stays inline fixes.
 
 ## Credits & prior art
 
