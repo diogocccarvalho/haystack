@@ -34,6 +34,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from collections import Counter
 import urllib.request
 from pathlib import Path
 
@@ -717,6 +718,22 @@ def rank(con, text, k=5):
     # (pinned must be score-ordered or the "best" correction is a random chunk)
     pinned = sorted((i for i in range(len(paths)) if lboost[i] > 0), key=lambda i: -scores[i])
     order = rerank(con, text, order, texts, pinned=pinned, paths_rel=paths, allow_hub=dominant_hubs)
+    # path diversity in top-k: a same-path duplicate can never add a path-level
+    # hit, but it can OCCUPY slots and push a distinct candidate out (measured:
+    # "distro comparison v2" -> 3x v2-sys chunks in top-3, cli-desktop doc at #4).
+    # Max 2 chunks per path inside top-k; swapped-out chunks stay in order.
+    max_per_path = int(_cfg.get("ranking", {}).get("max_per_path", 2))
+    if max_per_path < k:
+        kept, shown, deferred = [], Counter(), []
+        for i in order:
+            p = paths[i]
+            if shown[p] < max_per_path:
+                kept.append(i)
+                shown[p] += 1
+            else:
+                deferred.append(i)
+        kept.extend(deferred)
+        order = kept
     top = order[:k]
     return top, paths, heads, texts, scores
 
