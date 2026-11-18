@@ -116,3 +116,11 @@ from-scratch architecture gets the rules.
   (query/correction patterns), which needs the events log (also 2026-11-14:
   temporal boosts + `recent` shipped, neutral on non-temporal queries by
   construction, audit+eval unchanged 0.792/0.755).
+- 2026-11-18: R12 — live miss, both temporal layers: query "new jira ticket
+  yesterday" (EAI-1913, created 2026-11-17) ranked stale project notes above
+  work/projects/board-digest.md, which held the new-ticket line under a
+  board-context heading. Temporal boost fired (relative-time in query) but
+  didn't lift it; no learn pin existed. Fix applied to the pin layer only:
+  learn "new jira ticket we got" / "new jira ticket yesterday" ->
+  board-digest.md. Open: why recency boost didn't outrank stale chunks —
+  review boost weight vs RRF share before touching anything.
