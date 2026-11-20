@@ -380,8 +380,31 @@ def reanchor(con, moved=False):
     changed = 0
     for row in rows:
         old = row.get("path", "")
+        if row.get("fdigest"):
+            # folder pin: healthy while the dir exists; on a real move,
+            # re-resolve by unique basename + matching file-name-tree digest.
+            # Never routed through the file-title semantic branch — a folder
+            # name embedded against title chunks matches nothing trustworthy.
+            if (VAULT / old).is_dir():
+                continue  # healthy folder pin
+            new_path = None
+            same_name = [d for d in VAULT.rglob(Path(old).name)
+                         if d.is_dir()]
+            matches = [d for d in same_name
+                       if hashlib.sha256("\n".join(sorted(
+                           str(f.relative_to(d)) for f in d.rglob("*")
+                           if f.is_file())).encode()).hexdigest()[:16]
+                       == row["fdigest"]]
+            if len(matches) == 1:
+                new_path = rel_of(matches[0])
+            if new_path and new_path != old:
+                row.setdefault("history", []).append(old)
+                row["path"] = new_path
+                changed += 1
+                log_edit("reanchor-folder", f"{old} -> {new_path}")
+            continue  # no confident dir match = stale for audit, never guessed
         if old in live or not (row.get("hash") or row.get("anchor")):
-            continue  # healthy pin, folder pin, or legacy row without anchors
+            continue  # healthy pin, or legacy row without anchors
         new_path = None
         if row.get("hash"):
             hits = [lp for lp, lh in live.items() if lh == row["hash"]]
@@ -815,19 +838,30 @@ def conflicts(con, top=25, min_sim=0.80, verify=False):
     if n < 2:
         print("nothing indexed")
         return
-    sims = mat @ mat.T
-    iu, ju = np.triu_indices(n, k=1)
-    s = sims[iu, ju]
-    keep = (s >= min_sim) & (s < 0.97)
-    iu, ju, s = iu[keep], ju[keep], s[keep]
+    # row-blocked upper triangle: bounds the n x n intermediate in memory
+    # (full mat @ mat.T is O(n^2 x d) RAM at 10k chunks); exact results
+    # identical, threshold short-circuits nothing below min_sim
+    BLOCK = 512
     best = {}
-    for a, b, v in zip(iu, ju, s):
-        pa, pb = paths[a], paths[b]
-        if pa == pb:
+    for lo in range(0, n, BLOCK):
+        hi = min(lo + BLOCK, n)
+        block = mat[lo:hi] @ mat.T                      # (B, n)
+        bi, bj = np.nonzero(block >= min_sim)
+        if not len(bi):
             continue
-        key = tuple(sorted((pa, pb)))
-        if key not in best or v > best[key][0]:
-            best[key] = (v, a if pa < pb else b, b if pa < pb else a)
+        s = block[bi, bj]
+        iu, ju = bi + lo, bj
+        up = ju > iu                                    # upper triangle only
+        iu, ju, s = iu[up], ju[up], s[up]
+        band = (s < 0.97)
+        iu, ju, s = iu[band], ju[band], s[band]
+        for a, b, v in zip(iu, ju, s):
+            pa, pb = paths[a], paths[b]
+            if pa == pb:
+                continue
+            key = tuple(sorted((pa, pb)))
+            if key not in best or v > best[key][0]:
+                best[key] = (v, a if pa < pb else b, b if pa < pb else a)
     ranked = sorted(best.values(), reverse=True)[:top]
     if not ranked:
         print(f"no cross-file pairs above {min_sim} similarity — nothing to review")
@@ -995,12 +1029,20 @@ def learn(con, qtext, path, commit=True):
         sys.exit(f"{path}: not a vault path")
     # Identity snapshot for stale-pin re-anchoring: content hash (rename-only
     # moves) + title anchor text (semantic fallback that survives edits).
+    # Folder pins: digest of the file-name tree + the dir basename — a folder
+    # move keeps both, content edits keep the digest stable.
     fhash = fanchor = None
+    fdigest = None
     if rp.is_file():
         fhash = hashlib.sha256(rp.read_bytes()).hexdigest()[:16]
         cs = chunks_of(rp)
         if cs and cs[0][0] == "(title)" and cs[0][1].strip():
             fanchor = cs[0][1]
+    elif rp.is_dir():
+        fanchor = rp.name
+        fdigest = hashlib.sha256("\n".join(
+            sorted(str(f.relative_to(rp)) for f in rp.rglob("*") if f.is_file())
+        ).encode()).hexdigest()[:16]
     path = rel_of(rp)  # store index-relative paths only: absolute paths can
     # never match ranked paths (audit compares startswith) — a pin would be
     # dead on arrival. Real case: a pin learned with an absolute path sat
@@ -1012,7 +1054,8 @@ def learn(con, qtext, path, commit=True):
             break
     else:
         rows.append({"qtext": qtext, "path": path, "hits": 1,
-                     "hash": fhash, "anchor": fanchor})
+                     "hash": fhash, "anchor": fanchor,
+                     **({"fdigest": fdigest} if fdigest else {})})
     LEARNED_FILE.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     log_edit("learn", f"{qtext[:60]} -> {path}")
     print(f"learned: {qtext[:60]!r} -> {path}")
