@@ -11,105 +11,20 @@ import importlib.util
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Fillers: discourse markers carrying no retrieval semantics
-# ---------------------------------------------------------------------------
-FILLER_WORDS = frozenset({
-    'dude', 'bro', 'man', 'mate', 'hey', 'yo', 'eh',
-    'whats', 'wont', 'cant', 'didnt', 'doesnt', 'isnt',
-    'arent', 'couldnt', 'wouldnt', 'shouldnt',
-    'gonna', 'wanna', 'gotta',
-    'thats', 'heres', 'theres', 'wheres', 'whos', 'id',
-    'ive', 'im', 'its',
-    'again', 'already', 'still', 'yet', 'also',
-    'stuff', 'things', 'bit', 'sort', 'type',
-})
-
-# ---------------------------------------------------------------------------
-# Synonym expansion: colloquial -> technical synonyms (union, not replace)
-# ---------------------------------------------------------------------------
-SYNONYM_MAP = {
-    'fastest': {'performance'},
-    'speed': {'performance'},
-    'slow': {'laggy', 'latency'},
-    'setup': {'configuration', 'config', 'tune', 'tuning'},
-    'configure': {'configuration', 'config', 'tune', 'tuning'},
-    'tune': {'configuration', 'config', 'tune', 'tuning'},
-    'comparison': {'compare', 'versus', 'contrast'},
-    'compare': {'compare', 'versus', 'contrast'},
-    'deep': {'thorough', 'extensive', 'comprehensive', 'detail'},
-    'diver': {'thorough', 'extensive', 'comprehensive', 'detail'},
-    'dive': {'thorough', 'extensive', 'comprehensive', 'detail'},
-    'overview': {'summary', 'survey'},
-}
-
-# ---------------------------------------------------------------------------
-# Operator implementations
+# Operators: single source of truth is haystack.py (QF_* constants +
+# _apply_* implementations). Parallel copies drifted once already; these
+# wrappers delegate to the loaded haystack module (set in main()).
 # ---------------------------------------------------------------------------
 
 def apply_filler_strip(text):
     """Remove filler words from query text. Expands contractions first."""
-    t = text.lower()
-    contraction_map = [
-        (r'\bwhats\b', 'what'), (r"\bwont\b", "won't"),
-        (r"\bcant\b", "can't"), (r"\bdidnt\b", "didn't"),
-        (r"\bdoesnt\b", "doesn't"), (r"\bisnt\b", "isn't"),
-        (r"\barent\b", "aren't"), (r"\bcouldnt\b", "couldn't"),
-        (r"\bwouldnt\b", "wouldn't"), (r"\bshouldnt\b", "shouldn't"),
-        (r"\bgonna\b", "going-to"), (r"\bwanna\b", "want-to"),
-        (r"\bgotta\b", "got-to"), (r"\bthats\b", "that's"),
-        (r"\bheres\b", "here's"), (r"\btheres\b", "there's"),
-        (r"\bwheres\b", "where's"), (r"\bwhos\b", "who's"),
-        (r"\bim\b", "I'm"), (r"\bive\b", "I've"), (r"\bits\b", "it's"),
-    ]
-    for pat, repl in contraction_map:
-        t = re.sub(pat, repl, t)
-    result_words = []
-    for token in re.findall(r"[^\s]+", text):
-        token_lower = token.lower()
-        stripped = token_lower.rstrip(',.!?;:\'')
-        if not stripped or stripped == token_lower:
-            result_words.append(token)
-            continue
-        if stripped in FILLER_WORDS:
-            continue
-        prefix = token[:len(token) - len(stripped)]
-        suffix = token[len(stripped):]
-        result_words.append(prefix + stripped + suffix)
-    return ' '.join(result_words).strip()
+    return hm._apply_filler_strip(text)
 
 
 def apply_synonym_expansion(text):
     """Append synonym expansions as additional search tokens."""
-    lower = text.lower()
-    extra_terms = []
-    for orig_key, expansions in SYNONYM_MAP.items():
-        if orig_key in lower:
-            extra_terms.extend(expansions)
-    if not extra_terms:
-        return text
-    seen = set()
-    unique_extra = []
-    for t in extra_terms:
-        if t not in seen:
-            seen.add(t)
-            unique_extra.append(t)
-    return text + ' ' + ' '.join(unique_extra)
+    return hm._apply_synonym_expansion(text)
 
-
-# ---------------------------------------------------------------------------
-# Chain registry: name -> list of operator functions
-# ---------------------------------------------------------------------------
-# NOTE (2026-11-17, Diogo's design principle): the Populist is SEMANTIC-ONLY.
-# No hand-authored regex ops or maps — everything semantic is discovered from
-# data (vault co-occurrence mining, call logs, correction tables) and frozen
-# only after measured promotion gates (DiamondHead crystallization). Regex
-# ops written by hand = miscop; the semantic-only redesign is in
-# diamondhead/research/p3-prior-art.md once the focused sweep lands.
-
-# ---------------------------------------------------------------------------
-# Chain registry: name -> list of operator functions
-# (frozen hand-rule incumbents = the baseline The Populist must beat)
-# ---------------------------------------------------------------------------
 CHAINS = {
     'no_op': [],
     'minimal': [apply_filler_strip],
@@ -167,6 +82,7 @@ def main():
     spec = importlib.util.spec_from_file_location("hm", HM_PATH)
     hm = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hm)
+    globals()["hm"] = hm  # operator delegates below resolve at call time
     if vault_match:
         hm.VAULT = Path(vault_match.group(1)).expanduser()
     if idx_match:

@@ -453,18 +453,7 @@ def reindex(con):
         h = hashlib.sha256(raw).hexdigest()[:16]
         if h0 == h:
             continue
-        cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
-        cur.execute("DELETE FROM files WHERE path=?", (rel,))
-        cs = chunks_of(p, rel)
-        if cs:  # empty/near-empty files: no chunks to embed (embed([]) 400s)
-            vecs, kept = embed_resilient([c[1] for c in cs])
-            for pos, i in enumerate(kept):
-                head, txt = cs[i]
-                cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
-                            (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
-        m = re.search(r"^superseded_by:\s*(\S+)", raw.decode("utf-8", "replace"), re.M)
-        cur.execute("INSERT INTO files VALUES(?,?,?,?)",
-                    (rel, p.stat().st_mtime, h, m.group(1) if m else None))
+        _index_file(cur, p, rel, raw=raw)
         n_new += 1
     for rel in set(db_files) - seen:
         cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
@@ -907,21 +896,30 @@ def log_edit(op, detail):
         f.write(f"{time.strftime('%Y-%m-%d %H:%M')} {op} {detail}\n")
 
 
-def index_one(con, p):
-    rel = rel_of(p)
-    cur = con.cursor()
+def _index_file(cur, p, rel, raw=None):
+    """One file's index write: clear old rows, embed chunks, insert chunks
+    + files row. Shared by reindex() and index_one() — one INSERT pattern,
+    not two that can drift (the files-row-per-chunk bug lived here)."""
     cur.execute("DELETE FROM chunks WHERE path=?", (rel,))
     cur.execute("DELETE FROM files WHERE path=?", (rel,))
     cs = chunks_of(p, rel)
     h = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
-    vecs, kept = embed_resilient([c[1] for c in cs]) if cs else (np.zeros((0, 384), dtype=np.float32), [])
-    for pos, i in enumerate(kept):
-        head, txt = cs[i]
-        cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
-                    (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
-    m = re.search(r"^superseded_by:\s*(\S+)", p.read_text(errors="replace"), re.M)
+    if cs:
+        vecs, kept = embed_resilient([c[1] for c in cs])
+        for pos, i in enumerate(kept):
+            head, txt = cs[i]
+            cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
+                        (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
+    m = re.search(r"^superseded_by:\s*(\S+)",
+                  (raw or p.read_bytes()).decode("utf-8", "replace"), re.M)
     cur.execute("INSERT INTO files VALUES(?,?,?,?)",
                 (rel, p.stat().st_mtime, h, m.group(1) if m else None))
+
+
+def index_one(con, p):
+    rel = rel_of(p)
+    cur = con.cursor()
+    _index_file(cur, p, rel)
     con.commit()
     log_event(con, "index", rel)  # bumps events rowid: invalidates load_all caches
 
