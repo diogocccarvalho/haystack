@@ -22,6 +22,11 @@ import os
 import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+
+# serialize handlers: ThreadingHTTPServer + shared caches/LEARNED_FILE
+# mutate per request; concurrent /learn writes would race (lost updates)
+LOCK = threading.Lock()
 
 import haystack as nr
 
@@ -52,6 +57,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        # serialize: shared caches + LEARNED_FILE mutate inside handlers;
+        # two concurrent /learn writes would lose one update
+        with LOCK:
+            return self._do_post()
+
+    def _do_post(self):
         if not self._auth():
             self._send(401, {"error": "unauthorized"})
             return

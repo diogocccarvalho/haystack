@@ -628,7 +628,7 @@ def rank(con, text, k=5):
     text = _rewrite_query(text)
     try:
         q = embed([text])[0]
-    except (urllib.error.URLError, TimeoutError) as e:
+    except (urllib.error.URLError, TimeoutError, IndexError, KeyError) as e:
         # R2 extended to the primary embedder: retrieval must never hard-depend
         # on a server being up. Without embeddings, rank lexically (weaker:
         # no paraphrase, but identifiers still hit) instead of crashing.
@@ -885,9 +885,9 @@ def index_one(con, p):
         head, txt = cs[i]
         cur.execute("INSERT INTO chunks VALUES(?,?,?,?,?)",
                     (rel, head, h, vecs[pos].astype(np.float32).tobytes(), txt))
-        m = re.search(r"^superseded_by:\s*(\S+)", p.read_text(errors="replace"), re.M)
-        cur.execute("INSERT INTO files VALUES(?,?,?,?)",
-                    (rel, p.stat().st_mtime, h, m.group(1) if m else None))
+    m = re.search(r"^superseded_by:\s*(\S+)", p.read_text(errors="replace"), re.M)
+    cur.execute("INSERT INTO files VALUES(?,?,?,?)",
+                (rel, p.stat().st_mtime, h, m.group(1) if m else None))
     con.commit()
     log_event(con, "index", rel)  # bumps events rowid: invalidates load_all caches
 
